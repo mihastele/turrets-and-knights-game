@@ -48,6 +48,7 @@ const els = {
   waiting: $('waiting-overlay'), gameover: $('gameover-overlay'),
   resultTitle: $('result-title'), resultDetail: $('result-detail'),
   rematchBtn: $('btn-rematch'), rematchStatus: $('rematch-status'),
+  resignBtn: $('btn-resign'),
   rematchBtn2: null,
   clock: $('clock'), phase: $('phase-pill'), turretPower: $('turret-power'),
   sideBadge: $('side-badge'),
@@ -225,12 +226,17 @@ function showGameOver(snap) {
   } else if (snap.winner === state.seat) {
     title.textContent = 'VICTORY';
     title.className = 'win';
-    els.resultDetail.textContent = `Your forces breached the enemy line in lane ${snap.winLane + 1}!`;
+    els.resultDetail.textContent = snap.winLane >= 0
+      ? `Your forces breached the enemy line in lane ${snap.winLane + 1}!`
+      : 'Your opponent resigned.';
   } else {
     title.textContent = 'DEFEAT';
     title.className = 'lose';
-    els.resultDetail.textContent = `The enemy breached in lane ${snap.winLane + 1}.`;
+    els.resultDetail.textContent = snap.winLane >= 0
+      ? `The enemy breached in lane ${snap.winLane + 1}.`
+      : 'You resigned.';
   }
+  els.resignBtn.disabled = true;
   state.rematchPending = false;
   els.rematchBtn.disabled = false;
   els.rematchBtn.textContent = 'Rematch';
@@ -250,6 +256,8 @@ function resetForRematch() {
   els.unitUpgrades.querySelectorAll('.upgrade-btn').forEach((b) => { b.disabled = false; });
   els.rematchBtn.disabled = false;
   els.rematchBtn.textContent = 'Rematch';
+  els.resignBtn.disabled = false;
+  resetResignButton();
   showToast('Rematch started!', true);
 }
 
@@ -753,6 +761,8 @@ function backToMenu() {
   state.feed = [];
   els.feed.innerHTML = '';
   els.disconnect.classList.add('hidden');
+  resetResignButton();
+  els.resignBtn.disabled = false;
   showScreen('lobby');
 }
 
@@ -770,6 +780,28 @@ $('btn-rematch').addEventListener('click', () => {
   els.rematchBtn.textContent = 'Waiting…';
   els.rematchStatus.textContent = 'Rematch requested — waiting for opponent…';
   send({ type: 'rematch' });
+});
+
+// Resign needs a confirm step so nobody throws a match by accident.
+let resignArmed = false;
+let resignTimer = null;
+function resetResignButton() {
+  resignArmed = false;
+  clearTimeout(resignTimer);
+  els.resignBtn.textContent = 'Resign';
+  els.resignBtn.classList.remove('confirm');
+}
+els.resignBtn.addEventListener('click', () => {
+  if (!resignArmed) {
+    resignArmed = true;
+    els.resignBtn.textContent = 'Confirm resign?';
+    els.resignBtn.classList.add('confirm');
+    clearTimeout(resignTimer);
+    resignTimer = setTimeout(resetResignButton, 3000);
+    return;
+  }
+  resetResignButton();
+  send({ type: 'resign' });
 });
 
 $('btn-copy').addEventListener('click', () => copyCode());

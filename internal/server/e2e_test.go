@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -124,7 +125,7 @@ func TestEndToEndMatch(t *testing.T) {
 	}
 	base := ln.Addr().String()
 
-	srv := New("../../web")
+	srv := New(os.DirFS("../../web"))
 	defer srv.Close()
 	go func() { _ = srv.Serve(ln) }()
 
@@ -242,6 +243,64 @@ func TestEndToEndMatch(t *testing.T) {
 	}
 }
 
+// TestResignEndsMatch verifies that an explicit resign forfeits the match
+// immediately and the opponent is declared the winner.
+func TestResignEndsMatch(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short mode")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ln.Addr().String()
+
+	srv := New(os.DirFS("../../web"))
+	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+
+	created := postJSON(t, "http://"+base+"/api/rooms", map[string]any{})
+	code := created["code"].(string)
+	tokenA := created["token"].(string)
+	tokenB, _ := postJSON(t, "http://"+base+"/api/rooms/"+code+"/join", map[string]any{})["token"].(string)
+
+	wsA := dialWS(t, base, code, tokenA)
+	defer wsA.Close()
+	wsB := dialWS(t, base, code, tokenB)
+	defer wsB.Close()
+
+	// Let both clients drain hello/matchStart.
+	deadline := time.Now().Add(5 * time.Second)
+	for _, ws := range []*websocket.Conn{wsA, wsB} {
+		got := false
+		for !got && time.Now().Before(deadline) {
+			msg := readMsg(t, ws, 2*time.Second)
+			got = msg["type"] == "matchStart"
+		}
+	}
+
+	// Player B resigns; A (side 0) must win with no lane credited.
+	if err := wsB.WriteJSON(map[string]any{"type": "resign"}); err != nil {
+		t.Fatal(err)
+	}
+	var final snapshot
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := readSnapshot(t, wsA, 2*time.Second)
+		if snap.Finished {
+			final = snap
+			break
+		}
+	}
+	if !final.Finished {
+		t.Fatal("match did not end after resign")
+	}
+	if final.Winner != 0 || final.Draw || final.WinLane != -1 {
+		t.Fatalf("expected side A win by resign, got draw=%v winner=%d lane=%d", final.Draw, final.Winner, final.WinLane)
+	}
+}
+
 // TestRoomGuards covers join/rejoin error paths.
 func TestRoomGuards(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -249,7 +308,7 @@ func TestRoomGuards(t *testing.T) {
 		t.Fatal(err)
 	}
 	base := ln.Addr().String()
-	srv := New("../../web")
+	srv := New(os.DirFS("../../web"))
 	defer srv.Close()
 	go func() { _ = srv.Serve(ln) }()
 

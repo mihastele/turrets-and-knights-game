@@ -1,0 +1,7 @@
+.git
+.idea
+node_modules
+*.log
+.dockerignore
+Dockerfile
+shot-*.png

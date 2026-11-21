@@ -186,6 +186,18 @@ func (s *Sim) DrainEvents() []Event {
 // Actions
 // ---------------------------------------------------------------------------
 
+// Resign forfeits the match for the given side. The opponent wins; no lane is
+// credited. Safe to call only while the match is running.
+func (s *Sim) Resign(side int) {
+	if s.Finished || (side != SideA && side != SideB) {
+		return
+	}
+	s.Finished = true
+	s.Winner = 1 - side
+	s.WinLane = -1
+	s.addEvent(SideNone, "resign", "%s resigned", sideName(side))
+}
+
 // ApplyAction validates and applies a player intention. It returns a
 // human-readable error when the action is illegal; coins are never deducted
 // for illegal actions.

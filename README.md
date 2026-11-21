@@ -3,157 +3,234 @@
 A head-to-head lane siege for two players. Plants vs. Zombies meets a
 headline-fight: five lanes, two commanders, one breach. Build an economy,
 massed troops, or turtling turrets — whoever gets a living unit across the
-enemy breach line first wins. No accounts, no matchmaking, no database.
+enemy breach line first wins. No accounts, no database.
 
 Built with **Go** (server), **plain HTML/CSS/JS** (client), **Canvas 2D**
 (battlefield), **WebSockets** (live match), plain **HTTP** (lobby + page).
-No build step, no framework, no WebAssembly.
+The client is embedded in the Go binary — one static binary serves everything.
 
-## Quick start
+## Run it locally (30 seconds)
 
-Requirements: Go 1.22+ (developed on Go 1.27).
+Requires Go 1.22+ (developed on 1.27).
 
 ```sh
 go run ./cmd/lanesiege
 ```
 
-Then open **http://localhost:8080** in two browser tabs:
+Open **http://localhost:8080** in **two browser tabs**. In tab 1 click
+**Create Room**; in tab 2 type the 4-letter code and click **Join**. The
+match starts automatically.
 
-1. Tab 1: click **Create Room** — you get a 4-letter code.
-2. Tab 2: type the code, click **Join**.
-3. The match starts automatically. Player 1 (Blue) pushes left→right,
-   Player 2 (Red) pushes right→left.
-
-Flags (optional):
+Prefer editing the client without recompiling? Serve it from disk instead:
 
 ```sh
-go run ./cmd/lanesiege -addr :9000 -web web
+go run ./cmd/lanesiege -web web
 ```
 
-- `-addr` — listen address (default `:8080`)
-- `-web` — path to the client directory (default `web`, relative to repo root)
+### Flags and environment
+
+| Knob | Default | Meaning |
+|---|---|---|
+| `-addr` | `:8080`, or `:$PORT` if set | listen address |
+| `-web` | unset = embedded assets | serve the client from this directory instead |
+| `PORT` | — | used when `-addr` is not given (Fly/Render/Heroku style) |
+
+`GET /healthz` returns `200 ok` (for load balancers / uptime checks).
+
+## Host it so other people can join
+
+Rooms live **in memory**. One process = one world of rooms. Consequences:
+run exactly **one** instance (no replicas/autoscaling), and restarting drops
+active matches — both fine for pickup games.
+
+### Same LAN (this machine is the server)
+
+```sh
+go run ./cmd/lanesiege        # listens on :8080 on all interfaces
+```
+
+Find your LAN IP (Windows: `ipconfig`, look for IPv4 Address) and have the
+other player open `http://<your-LAN-IP>:8080`. On Windows you may need to
+allow inbound TCP 8080 once (run as admin):
+
+```powershell
+netsh advfirewall firewall add rule name="LaneSiege" dir=in action=allow protocol=TCP localport=8080
+```
+
+### Docker
+
+```sh
+docker build -t lanesiege .
+docker run -d --name laneseige -p 8080:8080 --restart unless-stopped lanesiege
+# or: docker compose up -d --build
+```
+
+Multi-stage build, static binary on distroless — the image holds no Go
+toolchain and needs no env vars. `PORT` may be overridden (`-e PORT=9000`,
+then publish that port instead). `docker-compose.yml` is included for
+convenience.
+
+### A cheap VPS / any Linux box
+
+```sh
+go build -trimpath -ldflags="-s -w" -o lanesiege ./cmd/lanesiege
+./lanesiege                      # serves on :8080
+```
+
+or copy the `lanesiege` binary onto the box — the client is embedded, no
+ports other than HTTP needed. Put Caddy or nginx in front for TLS:
+
+```caddyfile
+# /etc/caddy/Caddyfile — automatic HTTPS
+siege.example.com {
+    reverse_proxy 127.0.0.1:8080
+}
+```
+
+```nginx
+# nginx: note the WebSocket upgrade headers — required for the game socket
+map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+server {
+    listen 80;
+    server_name siege.example.com;
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+Or a systemd unit:
+
+```ini
+[Unit]
+Description=Lane Siege
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/lanesiege
+Restart=always
+Environment=PORT=8080
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### Fly.io / Render / similar
+
+Deploy as a **single-machine Docker web service**. Both set `PORT` for you;
+the Dockerfile listens on `$PORT` (default 8080) and `/healthz` is wired for
+health checks. Pin `min=1, max=1` instances — the server is stateful
+(in-memory rooms), so horizontal scaling will split rooms across instances.
+
+### Instant one-off public URL (no signup)
+
+```sh
+# Requires the binary from https://github.com/cloudflare/cloudflared
+cloudflared tunnel --url http://localhost:8080
+# prints https://<random>.trycloudflare.com  — share it, Ctrl+C to kill
+```
+
+or with any SSH daemon: `ssh -R 80:localhost:8080 ssh.localhost.run`.
+Both expose the game to the public internet — anyone with the URL can open
+the lobby. Rooms still need the 4-letter code, but treat the link as
+semi-public and don't linger for weeks; it's a test tunnel, not hosting.
 
 ## How to play
 
 - Click a shop item (or press **1–5** for troops, **6** for turret, **7** for
-  factory), then click a lane to deploy / build. **Esc** or right-click cancels.
-- You start with **100 coins**. You get **+10 coins every 5s**, plus a
-  **shared windfall of 5–10 coins every 12–20s** — both players get the same
-  amount at the same time (the server rolls it once).
-- A **Coin Factory** (55c) adds **+5 coins every 5s**. It pays for itself in
-  ~55 seconds. One per player.
+  factory), then **click a lane** to deploy / build. **Esc** or right-click
+  cancels the selection.
+- You start with **100 coins**. **+10 every 5s**, plus a **shared windfall of
+  5–10 every 12–20s** rolled once for both players.
+- A **Coin Factory** (55c) adds **+5 every 5s**; it pays back in ~55s. One
+  per player.
 - **Turrets** (45c) stop lone attackers but not an escorted ram. **Siege
-  engines** outrange turrets but die fast if swarmed. **Knights** punch
-  through open lanes but lose straight fights with equal soldiers.
-- **Unit upgrades** apply to future spawns only. **Turret upgrades** apply in
-  place, improve stats, and never heal. Both cap at two levels; the second
-  costs more.
-- At **6:00** overtime begins: no more turret construction or upgrades, and
-  every 30s turrets lose 15% of their damage (floor 0%). Troops and income
-  keep working.
-- At **10:00** the match is a **draw**. A simultaneous double breach is also a
-  draw. Either way, a rematch button appears.
-
-The economy is fully public: you can see both players' coins and income at all
-times. Deploy failures and upgrades never charge you on error.
+  engines** outrange turrets but die to anything that reaches them.
+  **Knights** punish open lanes but lose straight fights against equal coin
+  in soldiers. **Bowmen** shoot over your frontline but fold up close.
+- **Unit upgrades** apply to future spawns only; **turret upgrades** apply in
+  place, improve stats and never heal. Both cap at 2 levels, second costs
+  more. **Resign** forfeits the match (two-click confirm, top-left).
+- At **6:00** overtime begins: turret construction/upgrades are locked and
+  turrets lose 15% of their damage every 30s until it floors at 0. Troops and
+  income keep flowing. At **10:00** the match is a draw. A simultaneous
+  double breach is also a draw.
+- Both players' coins and income are public — watch the enemy's war fund.
+- If you disconnect, refresh the page: you rejoin your seat (rooms are kept
+  for 15 minutes).
 
 ## Project layout
 
 ```
-cmd/lanesiege/     entry point (flags, wiring)
-internal/sim/      the game simulation — pure Go, no I/O, no network
+cmd/lanesiege/     entry point (flags, PORT env, graceful shutdown)
+embed.go           //go:embed web — the client inside the binary
+internal/sim/      game simulation — pure Go, no I/O, no network
   balance.go       ALL tunable numbers (prices, HP, damage, ranges, timers)
   sim.go           tick loop, combat, economy, overtime, win detection
   snapshot.go      the wire snapshot sent to clients
 internal/server/   HTTP + WebSocket rooms, lobby, match ownership
-  server.go        room create/join/rejoin, static files, tick loop
+  server.go        create/join/rejoin, health, static files, room lifecycle
   ws.go            socket lifecycle, message handling, broadcast
-web/               the whole client (index.html, style.css, client.js)
+web/               the client (index.html, style.css, client.js)
+Dockerfile         static binary on distroless (docker build -t lanesiege .)
+docker-compose.yml convenience wrapper
 ```
 
 ### Architecture notes
 
-- **Server-authoritative.** Clients send intentions (`deploy`, `turret`,
-  `upgradeUnit`, …). The server owns coins, cooldowns, damage, positions and
-  the win check. Clients render snapshots. Nothing the client says about
-  money/damage is trusted.
-- **Single owner per match.** Each room's `*sim.Sim` is only touched while
-  holding the room mutex (tick loop and message handlers). The sim itself is
-  deterministic given its seed (`sim.New(seed, balance)`), which is how the
-  seeded windfall stays reproducible.
-- **Fixed timestep.** The sim advances at 20 Hz. Snapshots go out at 10 Hz
-  (`sim.SnapshotEvery = 2`); clients interpolate unit positions between
-  snapshots for smooth motion.
-- **Reconnects.** The browser stores its room code + token in
-  `sessionStorage`; on refresh it rejoins its seat automatically.
+- **Server-authoritative.** Clients send intentions; the server owns coins,
+  cooldowns, damage, positions and the win check. Clients render snapshots.
+- **Single owner per match.** All `sim.Sim` access happens under the room
+  mutex. The sim is deterministic given its seed (`sim.New(seed, balance)`).
+- **Fixed timestep.** 20 Hz sim; snapshots at 10 Hz; the browser
+  interpolates between them.
+- **Reconnects.** `sessionStorage` keeps your room code + token; refreshing
+  rejoins the seat.
 
 ## Tests
 
 ```sh
-go test ./...          # everything, incl. the ~20s end-to-end match test
-go test -short ./...   # skip the end-to-end match test
+go test ./...          # everything, incl. ~20s end-to-end match over real HTTP+WS
+go test -short ./...   # skip the end-to-end test
 ```
 
-Coverage highlights (`internal/sim/sim_test.go`):
-
-- spending, insufficient funds, invalid lanes, pad occupancy, factory limit
-- shared seeded windfall (two sims with the same seed stay identical)
-- unit upgrades affect future spawns only; turret upgrades never heal
-- overtime lockout (build/upgrade) and the 15%/30s damage decay with a floor at 0
-- simultaneous breach → draw; time limit at 10:00 → draw; normal breach → win + lane
-- ram prioritizes turrets, soldiers ignore turrets, siege respects min-range,
-  turret focuses the most advanced attacker
-
-`internal/server/e2e_test.go` plays a real match over HTTP + WebSocket:
-create → join → invalid action rejected → soldier marches → breach → rematch.
+Coverage includes spending, insufficient funds, invalid lanes, pad occupancy,
+factory limit, shared seeded windfall (identical across same-seed sims),
+future-only unit upgrades, non-healing turret upgrades, overtime lockout and
+damage decay to zero, simultaneous-breach draw, time-limit draw, ram vs.
+turret prioritization, soldier-ignores-turret, siege min-range, turret target
+focus, resign flow, rematch flow.
 
 ## Tuning the game
 
-Everything lives in one place: **`internal/sim/balance.go`** (`DefaultBalance`).
-
-- Prices, HP, damage, ranges, attack intervals, speeds: `Balance.Units`,
-  `Balance.Turret`.
-- Economy: `Balance.Economy` (start coins, interval, windfall bounds, factory).
-- Match length and overtime: `Balance.Overtime` (`Start`, `Interval`, `Decay`,
-  `DrawAt`).
-- Spawn inset and start coins: `Balance.StartCoins`, `Balance.SpawnInset`.
-- Ram turret damage uses `VsTurretDamage` on the unit entry; soldiers/bowmen/
-  knights have no `VsTurretDamage` and cannot hurt turrets at all.
-- Upgrade amounts use `UpgradeCosts`, `UpgradeHP`, `UpgradeDamage` per level.
-
-Tune by comparing **equal coin investments** (e.g. 45c knight vs ~2 soldiers),
-not unit-vs-unit in a vacuum. The sim is deterministic per seed, so you can
-replay a specific line with `sim.New(seed, balance)`.
-
-## What is deliberately not here (yet)
-
-No accounts, rankings, matchmaking, database, or spectators. No client-side
-prediction (snapshots interpolate; actions feel instant because the server
-re-broadcasts a snapshot immediately after each valid action). If profiling a
-real match shows a CPU bottleneck, revisit Canvas rendering or move the sim
-off the room mutex — not WebAssembly yet.
+Everything lives in **`internal/sim/balance.go`** (`DefaultBalance()`).
+Compare equal coin investments, not unit-vs-unit in a vacuum. The sim is
+deterministic per seed, so you can replay a specific line with
+`sim.New(seed, balance)`.
 
 ## Verified
 
-- `go vet ./...` clean; `go test ./...` green (sim unit tests + a full
-  end-to-end match over real HTTP + WebSocket).
-- Two headless Edge tabs driving the real UI: create room → join → deploy
-  soldier / build turret / buy factory (coins deducted correctly), battle
-  renders, soldier breaches, VICTORY/DEFEAT overlays show on both screens,
-  rematch resets both clients. Zero console errors.
-- Server logs confirm room lifecycle: create → join → start → finish → rematch.
-- Not yet verified by a human: actual *fun*. See below.
+- `go vet`, `gofmt` clean; all tests pass, including the HTTP+WS end-to-end
+  tests (full match, resign forfeit, room guards).
+- Two-browser (headless Edge) matches: create → join → deploy → turret →
+  factory → breach → victory/defeat overlays → rematch; resign flow; zero
+  console errors.
+- `docker build` + `docker run` verified: container serves the game, passes
+  `/healthz`, and ran a full match.
+- One-command public tunnel (`cloudflared tunnel --url http://localhost:8080`)
+  verified: page, API and WebSocket upgrade all work through it.
+- Not yet verified by a human: actual *fun* — balance may need a pass.
 
-## Known limits / needs human playtesting
+## Known limits
 
-- **Balance is unverified by humans.** Every number is a first-principles
-  estimate. Expect to tune `balance.go` after real games, especially: ram
-  vs. turret HP, knight vs. soldiers, and factory tempo vs. early rush.
-- No latency compensation or client prediction (fine for this game's pacing;
-  actions round-trip in milliseconds on LAN).
-- No spectator mode, no disconnect forfeit (a disconnected player's army
-  stands still; the other player can still win by breaching).
-- Reconnecting works via `sessionStorage`, but two tabs of the *same* player
-  will fight over their own seat (the newer one wins, the older is dropped).
-- Canvas rendering is intentionally simple shapes + HP bars. If you want
-  juice (particles, shake, sound), it's all in `web/client.js` (`draw*`).
+- Balance is playtested only by simulation, not by people. Expect to tune
+  `balance.go`.
+- No client prediction (fine at LAN/low-latency; high latency adds a few
+  frames of felt lag).
+- One instance only — rooms are in-memory; no persistence, no accounts,
+  no ranking, no spectators, no reconnect-after-forfeit.
+- A disconnected player's army just stops; the opponent can still win.

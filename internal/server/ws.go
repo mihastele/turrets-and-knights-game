@@ -171,6 +171,17 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		return
 	}
 
+	if msg.Type == "resign" {
+		if rm.state != "playing" {
+			return
+		}
+		rm.game.Resign(pl.seat)
+		rm.state = "finished"
+		log.Printf("room %s: side %d resigned", code, pl.seat)
+		s.broadcastSnapshotLocked(rm)
+		return
+	}
+
 	if rm.state != "playing" {
 		s.sendToLocked(conn, map[string]any{"type": "error", "message": "match is not running"})
 		return

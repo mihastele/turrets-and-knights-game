@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"net"
 	"net/http"
@@ -53,7 +54,6 @@ type room struct {
 
 // Server owns all rooms.
 type Server struct {
-	webDir  string
 	balance sim.Balance
 
 	mu    sync.Mutex
@@ -61,14 +61,15 @@ type Server struct {
 
 	httpServer *http.Server
 	stop       chan struct{}
+	stopOnce   sync.Once
 	wg         sync.WaitGroup
 }
 
-// New builds a Server. webDir is the directory holding index.html/style.css/
-// client.js and is served at "/".
-func New(webDir string) *Server {
+// New builds a Server. webFS must contain the client (index.html, style.css,
+// client.js) at its root; pass os.DirFS(dir) in development or the embedded
+// filesystem for a self-contained binary. It is served at "/".
+func New(webFS fs.FS) *Server {
 	s := &Server{
-		webDir:  webDir,
 		balance: sim.DefaultBalance(),
 		rooms:   map[string]*room{},
 		stop:    make(chan struct{}),
@@ -79,9 +80,16 @@ func New(webDir string) *Server {
 	mux.HandleFunc("POST /api/rooms/{code}/join", s.handleJoinRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/rejoin", s.handleRejoin)
 	mux.HandleFunc("GET /ws", s.handleWS)
-	mux.Handle("/", http.FileServer(http.Dir(webDir)))
+	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	})
+	mux.Handle("/", http.FileServer(http.FS(webFS)))
 
-	s.httpServer = &http.Server{Handler: mux}
+	s.httpServer = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	s.wg.Add(1)
 	go s.tickLoop()
@@ -104,9 +112,20 @@ func (s *Server) ListenAndServe(addr string) error {
 	return s.httpServer.ListenAndServe()
 }
 
-// Close stops background goroutines.
+// Close stops background goroutines and hijacked sockets, then shuts the
+// HTTP listener down. Safe to call multiple times.
 func (s *Server) Close() {
-	close(s.stop)
+	s.stopOnce.Do(func() { close(s.stop) })
+	// Drop every live match connection so its readPump/writePump exits.
+	s.mu.Lock()
+	for _, rm := range s.rooms {
+		for _, p := range rm.players {
+			if p != nil && p.conn != nil {
+				_ = p.conn.ws.Close()
+			}
+		}
+	}
+	s.mu.Unlock()
 	_ = s.httpServer.Close()
 	s.wg.Wait()
 }

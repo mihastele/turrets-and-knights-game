@@ -307,6 +307,26 @@ func TestOvertimeDamageDecayAndFloor(t *testing.T) {
 	}
 }
 
+func TestResignEndsMatch(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 100)
+	s.Resign(SideB) // Red forfeits
+	if !s.Finished {
+		t.Fatal("resign should finish the match")
+	}
+	if s.Draw || s.Winner != SideA {
+		t.Fatalf("winner = %d draw=%v, want SideA", s.Winner, s.Draw)
+	}
+	if s.WinLane != -1 {
+		t.Fatalf("resign win should not credit a lane, got %d", s.WinLane)
+	}
+	// Resigning after the match ended is a no-op.
+	s.Resign(SideA)
+	if s.Winner != SideA {
+		t.Fatal("resign changed the winner of a finished match")
+	}
+}
+
 func TestSoldierMarchesAndBreachWins(t *testing.T) {
 	s := newTestSim(t)
 	giveCoins(s, SideA, 10000)
