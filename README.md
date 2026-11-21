@@ -17,7 +17,7 @@ Requires Go 1.22+ (developed on 1.27).
 go run ./cmd/lanesiege
 ```
 
-Open **http://localhost:8080** in **two browser tabs**. In tab 1 click
+Open **http://localhost:8180** in **two browser tabs**. In tab 1 click
 **Create Room**; in tab 2 type the 4-letter code and click **Join**. The
 match starts automatically.
 
@@ -31,7 +31,7 @@ go run ./cmd/lanesiege -web web
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `-addr` | `:8080`, or `:$PORT` if set | listen address |
+| `-addr` | `:8180`, or `:$PORT` if set | listen address |
 | `-web` | unset = embedded assets | serve the client from this directory instead |
 | `PORT` | — | used when `-addr` is not given (Fly/Render/Heroku style) |
 
@@ -46,22 +46,22 @@ active matches — both fine for pickup games.
 ### Same LAN (this machine is the server)
 
 ```sh
-go run ./cmd/lanesiege        # listens on :8080 on all interfaces
+go run ./cmd/lanesiege        # listens on :8180 on all interfaces
 ```
 
 Find your LAN IP (Windows: `ipconfig`, look for IPv4 Address) and have the
-other player open `http://<your-LAN-IP>:8080`. On Windows you may need to
-allow inbound TCP 8080 once (run as admin):
+other player open `http://<your-LAN-IP>:8180`. On Windows you may need to
+allow inbound TCP 8180 once (run as admin):
 
 ```powershell
-netsh advfirewall firewall add rule name="LaneSiege" dir=in action=allow protocol=TCP localport=8080
+netsh advfirewall firewall add rule name="LaneSiege" dir=in action=allow protocol=TCP localport=8180
 ```
 
 ### Docker
 
 ```sh
 docker build -t lanesiege .
-docker run -d --name laneseige -p 8080:8080 --restart unless-stopped lanesiege
+docker run -d --name laneseige -p 8180:8180 --restart unless-stopped lanesiege
 # or: docker compose up -d --build
 ```
 
@@ -74,7 +74,7 @@ convenience.
 
 ```sh
 go build -trimpath -ldflags="-s -w" -o lanesiege ./cmd/lanesiege
-./lanesiege                      # serves on :8080
+./lanesiege                      # serves on :8180
 ```
 
 or copy the `lanesiege` binary onto the box — the client is embedded, no
@@ -83,7 +83,7 @@ ports other than HTTP needed. Put Caddy or nginx in front for TLS:
 ```caddyfile
 # /etc/caddy/Caddyfile — automatic HTTPS
 siege.example.com {
-    reverse_proxy 127.0.0.1:8080
+    reverse_proxy 127.0.0.1:8180
 }
 ```
 
@@ -94,7 +94,7 @@ server {
     listen 80;
     server_name siege.example.com;
     location / {
-        proxy_pass http://127.0.0.1:8080;
+        proxy_pass http://127.0.0.1:8180;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -113,7 +113,7 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/lanesiege
 Restart=always
-Environment=PORT=8080
+Environment=PORT=8180
 
 [Install]
 WantedBy=multi-user.target
@@ -122,7 +122,7 @@ WantedBy=multi-user.target
 ### Fly.io / Render / similar
 
 Deploy as a **single-machine Docker web service**. Both set `PORT` for you;
-the Dockerfile listens on `$PORT` (default 8080) and `/healthz` is wired for
+the Dockerfile listens on `$PORT` (default 8180) and `/healthz` is wired for
 health checks. Pin `min=1, max=1` instances — the server is stateful
 (in-memory rooms), so horizontal scaling will split rooms across instances.
 
@@ -130,11 +130,11 @@ health checks. Pin `min=1, max=1` instances — the server is stateful
 
 ```sh
 # Requires the binary from https://github.com/cloudflare/cloudflared
-cloudflared tunnel --url http://localhost:8080
+cloudflared tunnel --url http://localhost:8180
 # prints https://<random>.trycloudflare.com  — share it, Ctrl+C to kill
 ```
 
-or with any SSH daemon: `ssh -R 80:localhost:8080 ssh.localhost.run`.
+or with any SSH daemon: `ssh -R 80:localhost:8180 ssh.localhost.run`.
 Both expose the game to the public internet — anyone with the URL can open
 the lobby. Rooms still need the 4-letter code, but treat the link as
 semi-public and don't linger for weeks; it's a test tunnel, not hosting.
@@ -252,3 +252,4 @@ deterministic per seed, so you can replay a specific line with
 - One instance only — rooms are in-memory; no persistence, no accounts,
   no ranking, no spectators, no reconnect-after-forfeit.
 - A disconnected player's army just stops; the opponent can still win.
+

@@ -4,11 +4,11 @@
 // all you need to host it:
 //
 //	go run ./cmd/lanesiege
-//	docker build -t lanesiege . && docker run -p 8080:8080 lanesiege
+//	docker build -t lanesiege . && docker run -p 8180:8180 lanesiege
 //
 // Flags / environment:
 //
-//	-addr   listen address (default: ":8080", or ":"+$PORT when PORT is set,
+//	-addr   listen address (default: ":8180", or ":"+$PORT when PORT is set,
 //	        e.g. on Fly.io / Render / Heroku-style platforms)
 //	-web    serve the client from this directory instead of the embedded FS
 //	        (useful for editing the client without recompiling)
@@ -29,7 +29,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", "", "listen address (overrides $PORT; default :8080)")
+	addr := flag.String("addr", "", "listen address (overrides $PORT; default :8180)")
 	web := flag.String("web", "", "serve client from this directory instead of the embedded assets")
 	flag.Parse()
 
@@ -38,7 +38,7 @@ func main() {
 		if p := os.Getenv("PORT"); p != "" {
 			listen = ":" + p
 		} else {
-			listen = ":8080"
+			listen = ":8180"
 		}
 	}
 
@@ -71,3 +71,4 @@ func main() {
 		log.Fatal(err)
 	}
 }
+

@@ -2,5 +2,6 @@ services:
   lanesiege:
     build: .
     ports:
-      - "8080:8080"
+      - "8180:8180"
     restart: unless-stopped
+

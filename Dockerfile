@@ -14,9 +14,10 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/lanesie
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/lanesiege /lanesiege
 
-ENV PORT=8080
-EXPOSE 8080
+ENV PORT=8180
+EXPOSE 8180
 USER nonroot:nonroot
 
 # Rooms live in memory; a single container is one self-contained host.
 ENTRYPOINT ["/lanesiege"]
+
