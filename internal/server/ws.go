@@ -20,9 +20,11 @@ var upgrader = websocket.Upgrader{
 
 // clientMsg is the envelope for everything a client may send.
 type clientMsg struct {
-	Type string `json:"type"`
-	Lane int    `json:"lane"`
-	Unit string `json:"unit"`
+	Type  string `json:"type"`
+	Lane  int    `json:"lane"`
+	Unit  string `json:"unit"`
+	Emote string `json:"emote"`
+	Slot  *int   `json:"slot"` // turret slot for upgradeTurret (omitted = lowest built slot); ignored for turret builds (auto)
 }
 
 const writeWait = 5 * time.Second
@@ -171,6 +173,20 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		return
 	}
 
+	if msg.Type == "emote" {
+		// Quick canned reactions — a bit of table talk without a chat system.
+		allowed := map[string]bool{"nice": true, "gg": true, "lol": true, "ouch": true, "wow": true}
+		if !allowed[msg.Emote] || (rm.state != "playing" && rm.state != "finished") {
+			return // unknown emote or match not on; silently drop
+		}
+		if time.Since(rm.lastEmote[pl.seat]) < 1500*time.Millisecond {
+			return // rate limited
+		}
+		rm.lastEmote[pl.seat] = time.Now()
+		s.broadcastLocked(rm, map[string]any{"type": "emote", "seat": pl.seat, "emote": msg.Emote})
+		return
+	}
+
 	if msg.Type == "resign" {
 		if rm.state != "playing" {
 			return
@@ -189,6 +205,10 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 
 	var action sim.Action
 	action.Side = pl.seat
+	action.Slot = -1 // default: lowest built slot (upgrade) / auto (build)
+	if msg.Slot != nil {
+		action.Slot = *msg.Slot
+	}
 	switch msg.Type {
 	case "deploy":
 		action.Kind = sim.ActionDeploy

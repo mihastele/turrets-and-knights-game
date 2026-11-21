@@ -5,6 +5,9 @@
 // only authority for rules, money, damage and victory.
 package sim
 
+// TurretSlots is how many turrets each player may build per lane.
+const TurretSlots = 2
+
 // UnitType identifies one of the five deployable units.
 type UnitType string
 
@@ -64,9 +67,19 @@ type TurretBalance struct {
 	Range                 float64 `json:"range"`
 	AttackInterval        float64 `json:"attackInterval"`
 	PadX                  float64 `json:"padX"` // distance of each pad from its owner's edge
+	Slots                 int     `json:"slots"`
 	UpgradeCosts          [2]int  `json:"upgradeCosts"`
 	UpgradeHPPerLevel     float64 `json:"upgradeHpPerLevel"`     // added to max HP, never heals
 	UpgradeDamagePerLevel float64 `json:"upgradeDamagePerLevel"` // fractional damage gain per level
+}
+
+// CacheBalance configures the mid-field supply caches that drop on a timer.
+type CacheBalance struct {
+	Times    []float64 `json:"times"`    // seconds into the match when a cache drops
+	Amount   int       `json:"amount"`   // coins awarded to the collector
+	Lifetime float64   `json:"lifetime"` // seconds a cache stays on the field before fading
+	X        float64   `json:"x"`        // drop position (center line)
+	Radius   float64   `json:"radius"`   // pickup radius
 }
 
 // EconomyBalance holds income-related knobs.
@@ -98,6 +111,7 @@ type Balance struct {
 	Turret     TurretBalance            `json:"turret"`
 	Economy    EconomyBalance           `json:"economy"`
 	Overtime   OvertimeBalance          `json:"overtime"`
+	Cache      CacheBalance             `json:"cache"`
 }
 
 // DefaultBalance returns the launch tuning. Tune the game here; everything
@@ -109,13 +123,19 @@ type Balance struct {
 // don't block movement, they just shoot. The Ram's anti-turret attack reuses
 // AttackInterval.
 //
+// Targeting is split troops vs structures: Soldier, Bowman and Knight attack
+// enemy units only; Ram and Siege attack turrets only and cannot damage
+// enemy units.
+//
 // Reference matchups (roughly equal coin investments):
 //   - 1 Knight (45) vs 2 Soldiers (40): soldiers win the straight fight,
 //     but the knight arrives much faster and is stronger vs single targets.
-//   - Lone Soldier (20) vs Turret (45): turret wins if soldier is alone;
+//   - Lone Soldier (20) vs Turret (70): turret wins if soldier is alone;
 //     an escorted Ram (55 + escort) grinds the turret down.
 //   - Siege (75) outranges the Turret (13) and forces a response, but
 //     dies to anything that reaches it unsupported.
+//   - Each lane holds two turret slots per side, so a lane can be locked
+//     down hard — turrets are priced accordingly.
 func DefaultBalance() Balance {
 	return Balance{
 		StartCoins: 100,
@@ -124,12 +144,13 @@ func DefaultBalance() Balance {
 			Soldier: {Name: "Soldier", Role: "Cheap frontline. Contests a lane, protects support.", Cost: 20, MaxHP: 70, Damage: 9, Range: 2.4, AttackInterval: 1.0, Speed: 5.0, UpgradeCosts: [2]int{15, 25}, UpgradeHP: 0.15, UpgradeDamage: 0.15},
 			Bowman:  {Name: "Bowman", Role: "Ranged support. Strong behind a frontline; fragile up close.", Cost: 30, MaxHP: 45, Damage: 12, Range: 16, AttackInterval: 1.2, Speed: 4.6, UpgradeCosts: [2]int{20, 35}, UpgradeHP: 0.15, UpgradeDamage: 0.15},
 			Knight:  {Name: "Knight", Role: "Fast attacker. Punishes open lanes and lone bowmen.", Cost: 45, MaxHP: 95, Damage: 15, Range: 2.4, AttackInterval: 0.9, Speed: 8.5, UpgradeCosts: [2]int{25, 45}, UpgradeHP: 0.15, UpgradeDamage: 0.15},
-			Ram:     {Name: "Ram", Role: "Building breaker. Smashes turrets, useless vs troops. Needs an escort.", Cost: 55, MaxHP: 170, Damage: 4, Range: 2.6, AttackInterval: 1.2, Speed: 3.1, UpgradeCosts: [2]int{30, 50}, UpgradeHP: 0.20, UpgradeDamage: 0.15, VsTurretDamage: 38},
-			Siege:   {Name: "Siege Engine", Role: "Long-range pressure. Outranges turrets. Cannot fire close up.", Cost: 75, MaxHP: 85, Damage: 30, Range: 30, MinRange: 14, AttackInterval: 2.4, Speed: 2.3, UpgradeCosts: [2]int{40, 70}, UpgradeHP: 0.15, UpgradeDamage: 0.15, VsTurretDamage: 30},
+			Ram:     {Name: "Ram", Role: "Building breaker. Smashes turrets, cannot attack troops. Needs an escort.", Cost: 55, MaxHP: 170, Damage: 4, Range: 2.6, AttackInterval: 1.2, Speed: 3.1, UpgradeCosts: [2]int{30, 50}, UpgradeHP: 0.20, UpgradeDamage: 0.15, VsTurretDamage: 38},
+			Siege:   {Name: "Siege Engine", Role: "Long-range pressure. Outranges turrets; targets structures only. Cannot fire close up.", Cost: 75, MaxHP: 85, Damage: 30, Range: 30, MinRange: 14, AttackInterval: 2.4, Speed: 2.3, UpgradeCosts: [2]int{40, 70}, UpgradeHP: 0.15, UpgradeDamage: 0.15, VsTurretDamage: 30},
 		},
 		Turret: TurretBalance{
-			Name: "Turret", Cost: 45, MaxHP: 130, Damage: 14, Range: 13, AttackInterval: 1.1,
+			Name: "Turret", Cost: 70, MaxHP: 130, Damage: 14, Range: 13, AttackInterval: 1.1,
 			PadX:         10,
+			Slots:        TurretSlots,
 			UpgradeCosts: [2]int{25, 45}, UpgradeHPPerLevel: 0.25, UpgradeDamagePerLevel: 0.25,
 		},
 		Economy: EconomyBalance{
@@ -139,6 +160,13 @@ func DefaultBalance() Balance {
 		},
 		Overtime: OvertimeBalance{
 			Start: 360, Interval: 30, Decay: 0.15, DrawAt: 600,
+		},
+		Cache: CacheBalance{
+			Times:    []float64{45, 150, 260},
+			Amount:   30,
+			Lifetime: 25,
+			X:        FieldLength / 2, // center of the field
+			Radius:   3.5,
 		},
 	}
 }

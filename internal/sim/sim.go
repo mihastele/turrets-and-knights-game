@@ -28,12 +28,16 @@ const (
 )
 
 // Action is a player intention. Lane is used for deploy/turret actions, Unit
-// for deploy/upgrade-unit actions.
+// for deploy/upgrade-unit actions. For ActionBuildTurret the turret takes the
+// first free slot in the lane and Slot is ignored (slots are interchangeable).
+// For ActionUpgradeTurret, Slot selects which turret to upgrade; a negative
+// Slot means "the lowest-slot turret in the lane".
 type Action struct {
 	Kind ActionKind
 	Side int // SideA or SideB, filled in by the server from the connection
 	Lane int
 	Unit UnitType
+	Slot int
 }
 
 var (
@@ -41,8 +45,9 @@ var (
 	ErrInvalidLane    = errors.New("invalid lane")
 	ErrNotEnoughCoins = errors.New("not enough coins")
 	ErrUnknownUnit    = errors.New("unknown unit type")
-	ErrPadOccupied    = errors.New("lane already has a turret")
+	ErrPadOccupied    = errors.New("no free turret slot in that lane")
 	ErrNoTurret       = errors.New("no turret in that lane")
+	ErrInvalidSlot    = errors.New("invalid turret slot")
 	ErrOvertime       = errors.New("locked during overtime")
 	ErrMaxLevel       = errors.New("already at maximum level")
 	ErrFactoryBuilt   = errors.New("factory already built")
@@ -55,29 +60,42 @@ var (
 // Unit is a single fighting entity. All stats are fixed at spawn time;
 // upgrades only affect future spawns.
 type Unit struct {
-	ID       int64    `json:"id"`
-	Type     UnitType `json:"type"`
-	Side     int      `json:"side"`
-	Lane     int      `json:"lane"`
-	X        float64  `json:"x"`
-	YOff     float64  `json:"yOff"` // cosmetic lane-offset in lane-height fractions (-0.31..0.31)
-	HP       float64  `json:"hp"`
-	MaxHP    float64  `json:"maxHp"`
-	Damage   float64  `json:"damage"`
-	Cooldown float64  `json:"-"` // seconds until next attack
+	ID        int64    `json:"id"`
+	Type      UnitType `json:"type"`
+	Side      int      `json:"side"`
+	Lane      int      `json:"lane"`
+	X         float64  `json:"x"`
+	YOff      float64  `json:"yOff"` // cosmetic lane-offset in lane-height fractions (-0.31..0.31)
+	HP        float64  `json:"hp"`
+	MaxHP     float64  `json:"maxHp"`
+	Damage    float64  `json:"damage"`
+	Cooldown  float64  `json:"-"` // seconds until next attack
+	LastHitBy int      `json:"-"` // side that dealt the last damage, -1 if none
 }
 
-// Turret is a lane turret standing on a pad. It does not block movement.
+// Turret is a lane turret standing on a slot of a pad. It does not block
+// movement. Slot identifies which of the lane's TurretSlots slots it fills.
 type Turret struct {
-	Side     int     `json:"side"`
-	Lane     int     `json:"lane"`
-	X        float64 `json:"x"`
-	Level    int     `json:"level"`
-	HP       float64 `json:"hp"`
-	MaxHP    float64 `json:"maxHp"`
-	Damage   float64 `json:"damage"` // includes upgrades, excludes overtime factor
-	Cooldown float64 `json:"-"`
-	TargetID int64   `json:"-"`
+	Side      int     `json:"side"`
+	Lane      int     `json:"lane"`
+	Slot      int     `json:"slot"`
+	X         float64 `json:"x"`
+	Level     int     `json:"level"`
+	HP        float64 `json:"hp"`
+	MaxHP     float64 `json:"maxHp"`
+	Damage    float64 `json:"damage"` // includes upgrades, excludes overtime factor
+	Cooldown  float64 `json:"-"`
+	TargetID  int64   `json:"-"`
+	LastHitBy int     `json:"-"`
+}
+
+// Cache is a supply crate dropped mid-field. First unit to touch it collects it.
+type Cache struct {
+	ID        int64   `json:"id"`
+	Lane      int     `json:"lane"`
+	X         float64 `json:"x"`
+	Amount    int     `json:"amount"`
+	ExpiresAt float64 `json:"expiresAt"`
 }
 
 // Player holds per-player economy and upgrade state.
@@ -85,6 +103,12 @@ type Player struct {
 	Coins        int              `json:"coins"`
 	Factory      bool             `json:"factory"`
 	UnitUpgrades map[UnitType]int `json:"unitUpgrades"`
+
+	// Match statistics (for the end-of-match report).
+	DamageDealt float64 `json:"damageDealt"`
+	Kills       int     `json:"kills"`
+	UnitsLost   int     `json:"unitsLost"`
+	TurretsDown int     `json:"turretsDown"`
 }
 
 // IncomePerInterval is the player's current income per economy tick.
@@ -105,7 +129,8 @@ type Event struct {
 	Side   int    `json:"side"` // SideA, SideB, or SideNone for global news
 	Kind   string `json:"kind"` // "windfall", "overtime", "turretDestroyed", ...
 	Text   string `json:"text"`
-	Amount int    `json:"amount,omitempty"` // windfall amount, so clients can animate it
+	Amount int    `json:"amount,omitempty"` // windfall/cache amount, streak size
+	Lane   int    `json:"lane,omitempty"`   // lane for supply cache events (0 = lane 1 unless omitted)
 }
 
 // FxEvent is a purely cosmetic combat effect (projectile, melee spark) for
@@ -117,6 +142,7 @@ type FxEvent struct {
 	Lane  int     `json:"lane"`
 	FromX float64 `json:"fromX"`
 	ToX   float64 `json:"toX"`
+	Slot  int     `json:"slot"` // turret slot index; -1 for non-turret FX
 }
 
 // DrainFx returns and clears pending FX events (drained by Snapshot).
@@ -141,7 +167,7 @@ type Sim struct {
 	Time float64 `json:"time"`
 
 	units   []*Unit
-	turrets [2][NumLanes]*Turret
+	turrets [2][NumLanes][TurretSlots]*Turret
 	players [2]Player
 
 	incomeIn   float64
@@ -156,10 +182,14 @@ type Sim struct {
 	Winner   int  `json:"winner"`  // SideA/SideB, or NoSide when undecided/draw
 	WinLane  int  `json:"winLane"` // 0-indexed lane that breached, -1 otherwise
 
-	nextUnitID int64
-	events     []Event
-	fx         []FxEvent
-	firstBlood bool
+	nextUnitID   int64
+	events       []Event
+	fx           []FxEvent
+	firstBlood   bool
+	caches       []*Cache
+	nextCacheIdx int
+	streakCount  [2]int
+	lastKillAt   [2]float64
 }
 
 // New creates a fresh match. seed makes the shared windfall sequence
@@ -179,6 +209,7 @@ func New(seed int64, cfg Balance) *Sim {
 			Coins:        cfg.StartCoins,
 			UnitUpgrades: map[UnitType]int{},
 		}
+		s.lastKillAt[i] = -100
 	}
 	s.windfallIn = s.rollWindfallGap()
 	return s
@@ -255,16 +286,17 @@ func (s *Sim) ApplyAction(a Action) error {
 		}
 		p.Coins -= ub.Cost
 		s.units = append(s.units, &Unit{
-			ID:       s.nextUnitID,
-			Type:     a.Unit,
-			Side:     a.Side,
-			Lane:     a.Lane,
-			X:        x,
-			YOff:     (s.rng.Float64() - 0.5) * 0.62,
-			HP:       ub.MaxHP * hpMul,
-			MaxHP:    ub.MaxHP * hpMul,
-			Damage:   ub.Damage * dmgMul,
-			Cooldown: 0,
+			ID:        s.nextUnitID,
+			Type:      a.Unit,
+			Side:      a.Side,
+			Lane:      a.Lane,
+			X:         x,
+			YOff:      (s.rng.Float64() - 0.5) * 0.62,
+			HP:        ub.MaxHP * hpMul,
+			MaxHP:     ub.MaxHP * hpMul,
+			Damage:    ub.Damage * dmgMul,
+			Cooldown:  0,
+			LastHitBy: -1,
 		})
 		s.nextUnitID++
 		return nil
@@ -276,7 +308,8 @@ func (s *Sim) ApplyAction(a Action) error {
 		if s.Overtime {
 			return ErrOvertime
 		}
-		if s.turrets[a.Side][a.Lane] != nil {
+		slot := firstFreeTurretSlot(s.turrets[a.Side][a.Lane])
+		if slot < 0 {
 			return fmt.Errorf("%w: lane %d", ErrPadOccupied, a.Lane+1)
 		}
 		cost := s.cfg.Turret.Cost
@@ -288,14 +321,16 @@ func (s *Sim) ApplyAction(a Action) error {
 		if a.Side == SideB {
 			x = FieldLength - s.cfg.Turret.PadX
 		}
-		s.turrets[a.Side][a.Lane] = &Turret{
-			Side:   a.Side,
-			Lane:   a.Lane,
-			X:      x,
-			Level:  0,
-			HP:     s.cfg.Turret.MaxHP,
-			MaxHP:  s.cfg.Turret.MaxHP,
-			Damage: s.cfg.Turret.Damage,
+		s.turrets[a.Side][a.Lane][slot] = &Turret{
+			Side:      a.Side,
+			Lane:      a.Lane,
+			Slot:      slot,
+			X:         x,
+			Level:     0,
+			HP:        s.cfg.Turret.MaxHP,
+			MaxHP:     s.cfg.Turret.MaxHP,
+			Damage:    s.cfg.Turret.Damage,
+			LastHitBy: -1,
 		}
 		return nil
 
@@ -336,7 +371,17 @@ func (s *Sim) ApplyAction(a Action) error {
 		if s.Overtime {
 			return ErrOvertime
 		}
-		t := s.turrets[a.Side][a.Lane]
+		slots := s.turrets[a.Side][a.Lane]
+		idx := a.Slot
+		if idx < 0 {
+			idx = firstBuiltTurretSlot(slots)
+			if idx < 0 {
+				return ErrNoTurret
+			}
+		} else if idx >= TurretSlots {
+			return ErrInvalidSlot
+		}
+		t := slots[idx]
 		if t == nil {
 			return ErrNoTurret
 		}
@@ -359,6 +404,26 @@ func (s *Sim) ApplyAction(a Action) error {
 }
 
 func validLane(l int) bool { return l >= 0 && l < NumLanes }
+
+// firstFreeTurretSlot returns the index of the first free slot, or -1 if the lane is full.
+func firstFreeTurretSlot(slots [TurretSlots]*Turret) int {
+	for i, t := range slots {
+		if t == nil {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstBuiltTurretSlot returns the lowest-indexed occupied slot, or -1 if empty.
+func firstBuiltTurretSlot(slots [TurretSlots]*Turret) int {
+	for i, t := range slots {
+		if t != nil {
+			return i
+		}
+	}
+	return -1
+}
 
 // timerEpsilon absorbs float accumulation error in countdown timers.
 const timerEpsilon = 1e-9
@@ -404,6 +469,16 @@ func (s *Sim) Step(dt float64) {
 		s.windfallIn = s.rollWindfallGap()
 	}
 
+	// --- Supply caches ---
+	s.stepCaches()
+
+	// --- Kill streak decay ---
+	for side := 0; side < 2; side++ {
+		if s.streakCount[side] > 0 && s.Time-s.lastKillAt[side] > 3.0 {
+			s.streakCount[side] = 0
+		}
+	}
+
 	// --- Overtime ---
 	if !s.Overtime && s.Time >= s.cfg.Overtime.Start {
 		s.Overtime = true
@@ -426,6 +501,72 @@ func (s *Sim) Step(dt float64) {
 
 	// --- Win / draw detection ---
 	s.checkEnd()
+}
+
+// stepCaches spawns, ages and collects supply caches.
+func (s *Sim) stepCaches() {
+	cc := s.cfg.Cache
+	for s.nextCacheIdx < len(cc.Times) && s.Time >= cc.Times[s.nextCacheIdx] {
+		lane := s.rng.Intn(NumLanes)
+		s.nextCacheIdx++
+		s.caches = append(s.caches, &Cache{
+			ID:        s.nextUnitID,
+			Lane:      lane,
+			X:         cc.X,
+			Amount:    cc.Amount,
+			ExpiresAt: s.Time + cc.Lifetime,
+		})
+		s.nextUnitID++
+		s.addEvent(SideNone, "supply", "Supply cache dropped in lane %d! (+%d coins)", lane+1, cc.Amount)
+		s.events[len(s.events)-1].Lane = lane
+		s.events[len(s.events)-1].Amount = cc.Amount
+	}
+	for i := 0; i < len(s.caches); {
+		c := s.caches[i]
+		if s.Time >= c.ExpiresAt {
+			s.addEvent(SideNone, "supplyGone", "The supply cache in lane %d vanished…", c.Lane+1)
+			s.events[len(s.events)-1].Lane = c.Lane
+			s.caches = append(s.caches[:i], s.caches[i+1:]...)
+			continue
+		}
+		claimed := -1
+		for _, u := range s.units {
+			if u.Lane == c.Lane && absDist(u.X, c.X) <= cc.Radius {
+				claimed = u.Side
+				break
+			}
+		}
+		if claimed >= 0 {
+			s.players[claimed].Coins += c.Amount
+			s.addEvent(SideNone, "supplyClaim", "%s claimed the supply cache in lane %d! (+%d coins)", sideName(claimed), c.Lane+1, c.Amount)
+			s.events[len(s.events)-1].Lane = c.Lane
+			s.events[len(s.events)-1].Amount = c.Amount
+			s.caches = append(s.caches[:i], s.caches[i+1:]...)
+			continue
+		}
+		i++
+	}
+}
+
+// dealDamage applies damage, attributes it for stats, and remembers the
+// attacker for kill credit.
+func (s *Sim) dealDamage(attackerSide int, target any, dmg float64) {
+	amount := func(hp float64) float64 {
+		if dmg < hp {
+			return dmg
+		}
+		return hp
+	}
+	switch t := target.(type) {
+	case *Unit:
+		s.players[attackerSide].DamageDealt += amount(t.HP)
+		t.HP -= dmg
+		t.LastHitBy = attackerSide
+	case *Turret:
+		s.players[attackerSide].DamageDealt += amount(t.HP)
+		t.HP -= dmg
+		t.LastHitBy = attackerSide
+	}
 }
 
 // direction returns +1 for side A (moving right) and -1 for side B.
@@ -457,7 +598,7 @@ func (s *Sim) stepUnits(dt float64) {
 		switch t := target.(type) {
 		case *Unit:
 			if u.Cooldown <= 0 {
-				t.HP -= u.Damage
+				s.dealDamage(u.Side, t, u.Damage)
 				u.Cooldown = s.cfg.Units[u.Type].AttackInterval
 				s.emitAttackFx(u, t.X)
 			}
@@ -468,7 +609,7 @@ func (s *Sim) stepUnits(dt float64) {
 					mul := 1 + float64(s.players[u.Side].UnitUpgrades[u.Type])*ub.UpgradeDamage
 					dmg = ub.VsTurretDamage * mul
 				}
-				t.HP -= dmg
+				s.dealDamage(u.Side, t, dmg)
 				u.Cooldown = s.cfg.Units[u.Type].AttackInterval
 				s.emitAttackFx(u, t.X)
 			}
@@ -485,36 +626,22 @@ func (s *Sim) findTarget(u *Unit) any {
 
 	switch u.Type {
 	case Ram:
-		// Priority 1: an enemy turret in range. Priority 2: nearest enemy unit.
+		// Structure-breaker: attacks turrets only, never troops.
 		if tr := s.nearestEnemyTurret(u, ub.Range); tr != nil {
 			return tr
 		}
-		if eu := s.nearestEnemyUnit(u, ub.Range); eu != nil {
-			return eu
-		}
 		return nil
 	case Siege:
-		// Only targets inside [MinRange, Range]; nearest first, turrets included.
-		bestUnit := s.nearestEnemyUnit(u, ub.Range)
-		bestTurret := s.nearestEnemyTurret(u, ub.Range)
-		var best any
-		var bestD float64 = math.Inf(1)
-		if bestUnit != nil {
-			best, bestD = bestUnit, absDist(u.X, bestUnit.X)
-		}
-		if bestTurret != nil {
-			d := absDist(u.X, bestTurret.X)
-			if d < bestD {
-				best, bestD = bestTurret, d
-			}
-		}
-		if best == nil {
+		// Artillery: attacks turrets only, never troops.
+		// Only targets inside [MinRange, Range]; hold position when too close.
+		tr := s.nearestEnemyTurret(u, ub.Range)
+		if tr == nil {
 			return nil
 		}
-		if bestD < ub.MinRange {
+		if absDist(u.X, tr.X) < ub.MinRange {
 			return nil // too close; handled by the hold-position rule
 		}
-		return best
+		return tr
 	default:
 		// Soldiers, bowmen and knights ignore turrets entirely.
 		if eu := s.nearestEnemyUnit(u, ub.Range); eu != nil {
@@ -543,17 +670,16 @@ func (s *Sim) nearestEnemyTurret(u *Unit, maxRange float64) *Turret {
 	enemy := 1 - u.Side
 	var best *Turret
 	var bestD float64 = math.Inf(1)
-	for lane := 0; lane < NumLanes; lane++ {
-		if lane != u.Lane {
-			continue
-		}
-		t := s.turrets[enemy][lane]
-		if t == nil {
-			continue
-		}
-		d := absDist(u.X, t.X)
-		if d <= maxRange && d < bestD {
-			best, bestD = t, d
+	if u.Lane >= 0 && u.Lane < NumLanes {
+		for slot := 0; slot < TurretSlots; slot++ {
+			t := s.turrets[enemy][u.Lane][slot]
+			if t == nil {
+				continue
+			}
+			d := absDist(u.X, t.X)
+			if d <= maxRange && d < bestD {
+				best, bestD = t, d
+			}
 		}
 	}
 	return best
@@ -571,9 +697,14 @@ func (s *Sim) nearestEnemyDist(u *Unit) (float64, bool) {
 		}
 	}
 	for lane := 0; lane < NumLanes; lane++ {
-		if t := s.turrets[1-u.Side][lane]; lane == u.Lane && t != nil {
-			if dd := absDist(u.X, t.X); dd < d {
-				d, found = dd, true
+		if lane != u.Lane {
+			continue
+		}
+		for slot := 0; slot < TurretSlots; slot++ {
+			if t := s.turrets[1-u.Side][lane][slot]; t != nil {
+				if dd := absDist(u.X, t.X); dd < d {
+					d, found = dd, true
+				}
 			}
 		}
 	}
@@ -587,36 +718,38 @@ func (s *Sim) emitAttackFx(u *Unit, targetX float64) {
 	if u.Type == Bowman || u.Type == Siege {
 		kind = "shot"
 	}
-	s.fx = append(s.fx, FxEvent{Kind: kind, Unit: string(u.Type), Side: u.Side, Lane: u.Lane, FromX: u.X, ToX: targetX})
+	s.fx = append(s.fx, FxEvent{Kind: kind, Unit: string(u.Type), Side: u.Side, Lane: u.Lane, FromX: u.X, ToX: targetX, Slot: -1})
 }
 
 func (s *Sim) stepTurrets(dt float64) {
 	for side := 0; side < 2; side++ {
 		for lane := 0; lane < NumLanes; lane++ {
-			t := s.turrets[side][lane]
-			if t == nil {
-				continue
-			}
-			t.Cooldown -= dt
-
-			// Revalidate the focused target: must be alive, in lane, in range.
-			target := s.unitByID(t.TargetID)
-			if target != nil && (target.Side == side || target.Lane != lane || absDist(target.X, t.X) > s.cfg.Turret.Range || target.HP <= 0) {
-				target = nil
-				t.TargetID = 0
-			}
-
-			if target == nil {
-				target = s.pickTurretTarget(t, side, lane)
-				if target != nil {
-					t.TargetID = target.ID
+			for slot := 0; slot < TurretSlots; slot++ {
+				t := s.turrets[side][lane][slot]
+				if t == nil {
+					continue
 				}
-			}
+				t.Cooldown -= dt
 
-			if target != nil && t.Cooldown <= 0 {
-				target.HP -= t.Damage * s.TurretFactor
-				t.Cooldown = s.cfg.Turret.AttackInterval
-				s.fx = append(s.fx, FxEvent{Kind: "shot", Unit: "turret", Side: side, Lane: lane, FromX: t.X, ToX: target.X})
+				// Revalidate the focused target: must be alive, in lane, in range.
+				target := s.unitByID(t.TargetID)
+				if target != nil && (target.Side == side || target.Lane != lane || absDist(target.X, t.X) > s.cfg.Turret.Range || target.HP <= 0) {
+					target = nil
+					t.TargetID = 0
+				}
+
+				if target == nil {
+					target = s.pickTurretTarget(t, side, lane)
+					if target != nil {
+						t.TargetID = target.ID
+					}
+				}
+
+				if target != nil && t.Cooldown <= 0 {
+					s.dealDamage(side, target, t.Damage*s.TurretFactor)
+					t.Cooldown = s.cfg.Turret.AttackInterval
+					s.fx = append(s.fx, FxEvent{Kind: "shot", Unit: "turret", Side: side, Lane: lane, FromX: t.X, ToX: target.X, Slot: slot})
+				}
 			}
 		}
 	}
@@ -670,9 +803,32 @@ func (s *Sim) removeDead() {
 			kept = append(kept, u)
 			continue
 		}
+		s.players[u.Side].UnitsLost++
 		if !s.firstBlood {
 			s.firstBlood = true
 			s.addEvent(SideNone, "firstBlood", "First blood in lane %d!", u.Lane+1)
+		}
+		if killer := u.LastHitBy; killer >= 0 {
+			s.players[killer].Kills++
+			if s.Time-s.lastKillAt[killer] <= 3.0 {
+				s.streakCount[killer]++
+			} else {
+				s.streakCount[killer] = 1
+			}
+			s.lastKillAt[killer] = s.Time
+			if n := s.streakCount[killer]; n >= 2 {
+				var label string
+				switch n {
+				case 2:
+					label = "DOUBLE KILL"
+				case 3:
+					label = "TRIPLE KILL"
+				default:
+					label = fmt.Sprintf("RAMPAGE x%d", n)
+				}
+				s.addEvent(SideNone, "streak", "%s — %s!", sideName(killer), label)
+				s.events[len(s.events)-1].Amount = n
+			}
 		}
 	}
 	for i := len(kept); i < len(s.units); i++ {
@@ -682,9 +838,14 @@ func (s *Sim) removeDead() {
 
 	for side := 0; side < 2; side++ {
 		for lane := 0; lane < NumLanes; lane++ {
-			if t := s.turrets[side][lane]; t != nil && t.HP <= 0 {
-				s.turrets[side][lane] = nil
-				s.addEvent(side, "turretDestroyed", "%s turret in lane %d was destroyed!", sideName(side), lane+1)
+			for slot := 0; slot < TurretSlots; slot++ {
+				if t := s.turrets[side][lane][slot]; t != nil && t.HP <= 0 {
+					if killer := t.LastHitBy; killer >= 0 {
+						s.players[killer].TurretsDown++
+					}
+					s.turrets[side][lane][slot] = nil
+					s.addEvent(side, "turretDestroyed", "%s turret in lane %d was destroyed!", sideName(side), lane+1)
+				}
 			}
 		}
 	}

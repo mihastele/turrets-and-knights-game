@@ -83,32 +83,45 @@ func TestDeployInvalidLane(t *testing.T) {
 	}
 }
 
-func TestTurretPadOnlyOne(t *testing.T) {
+func TestTurretTwoSlotsPerLane(t *testing.T) {
 	s := newTestSim(t)
+	giveCoins(s, SideA, 1000)
 	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1}); err != nil {
-		t.Fatalf("build turret: %v", err)
+		t.Fatalf("build turret slot 0: %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1}); err != nil {
+		t.Fatalf("build turret slot 1: %v", err)
+	}
+	for i, want := range []int{0, 1} {
+		tr := s.turrets[SideA][1][want]
+		if tr == nil {
+			t.Fatalf("slot %d empty after two builds", want)
+		}
+		if tr.Slot != i {
+			t.Fatalf("turret in slot array index %d reports slot %d", i, tr.Slot)
+		}
 	}
 	before := coinBalance(s, SideA)
 	err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1})
 	if !errors.Is(err, ErrPadOccupied) {
-		t.Fatalf("want ErrPadOccupied, got %v", err)
+		t.Fatalf("want ErrPadOccupied on third build, got %v", err)
 	}
 	if got := coinBalance(s, SideA); got != before {
-		t.Fatalf("coins changed on occupied pad: %d -> %d", before, got)
+		t.Fatalf("coins changed on failed build: %d -> %d", before, got)
 	}
 	// Other lane still fine.
 	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2}); err != nil {
-		t.Fatalf("build second turret: %v", err)
+		t.Fatalf("build turret in another lane: %v", err)
 	}
 }
 
 func TestTurretCannotAfford(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideB, 44)
+	giveCoins(s, SideB, 69)
 	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); !errors.Is(err, ErrNotEnoughCoins) {
 		t.Fatalf("want ErrNotEnoughCoins, got %v", err)
 	}
-	if s.turrets[SideB][0] != nil {
+	if s.turrets[SideB][0][0] != nil {
 		t.Fatal("turret built without paying")
 	}
 }
@@ -235,7 +248,7 @@ func TestTurretUpgradeDoesNotHeal(t *testing.T) {
 	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2}); err != nil {
 		t.Fatal(err)
 	}
-	tr := s.turrets[SideA][2]
+	tr := s.turrets[SideA][2][0]
 	tr.HP = 40 // simulate damage
 	baseDamage := tr.Damage
 	baseMaxHP := tr.MaxHP
@@ -394,7 +407,7 @@ func TestRamPrioritizesTurretOverUnit(t *testing.T) {
 	if enemy.HP != 70 {
 		t.Fatalf("ram chewed on the soldier (hp=%v); should prioritize the turret", enemy.HP)
 	}
-	if s.turrets[SideB][0].HP >= s.cfg.Turret.MaxHP {
+	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
 		t.Fatal("ram did not damage the turret")
 	}
 }
@@ -410,9 +423,9 @@ func TestSoldierIgnoresTurret(t *testing.T) {
 	soldier := &Unit{ID: 950, Type: Soldier, Side: SideA, Lane: 1, X: FieldLength - s.cfg.Turret.PadX - 1, HP: 70, MaxHP: 70, Damage: 9}
 	s.units = append(s.units, soldier)
 	s.nextUnitID = 951
-	hpBefore := s.turrets[SideB][1].HP
+	hpBefore := s.turrets[SideB][1][0].HP
 	step(s, 1.0)
-	if s.turrets[SideB][1].HP != hpBefore {
+	if s.turrets[SideB][1][0].HP != hpBefore {
 		t.Fatal("soldier damaged a turret; soldiers must ignore turrets")
 	}
 }
@@ -426,16 +439,30 @@ func TestSiegeMinRangeHolds(t *testing.T) {
 	s.nextUnitID = 3
 	step(s, 1.0)
 	if enemy.HP != 70 {
-		t.Fatalf("siege fired inside minimum range (enemy hp=%v)", enemy.HP)
+		t.Fatalf("siege attacked a unit it cannot target (enemy hp=%v)", enemy.HP)
 	}
 	if siege.X != 50 {
 		t.Fatalf("siege moved while too close to enemy: x=%v", siege.X)
 	}
-	// Pull the enemy back into the kill window and confirm it fires.
+	// Pull the enemy back into the kill window: a siege outranges melee but
+	// STILL cannot target units — nothing happens.
 	enemy.X = 70
 	step(s, 2.5)
-	if enemy.HP >= 70 {
-		t.Fatal("siege did not fire at a target inside its range band")
+	if enemy.HP != 70 {
+		t.Fatalf("siege damaged a unit it cannot target (enemy hp=%v)", enemy.HP)
+	}
+	// A turret inside the band absolutely is a target.
+	giveCoins(s, SideB, 1000)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
+		t.Fatal(err)
+	}
+	// Turret spawns at x=FieldLength-PadX=90, siege at ~50+speed... it advanced
+	// while unopposed? No: step() advances it only when no target is in band.
+	// Just check that when in band it fires.
+	siege.X = 70
+	step(s, 2.5)
+	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
+		t.Fatal("siege did not fire at a turret inside its range band")
 	}
 }
 
@@ -448,10 +475,10 @@ func TestSiegeOutrangesTurret(t *testing.T) {
 	s.units = append(s.units, siege)
 	s.nextUnitID = 2
 	step(s, 6.0)
-	if s.turrets[SideB][0] == nil {
+	if s.turrets[SideB][0][0] == nil {
 		t.Fatal("turret destroyed too fast or missing")
 	}
-	if s.turrets[SideB][0].HP >= s.cfg.Turret.MaxHP {
+	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
 		t.Fatal("siege dealt no damage to turret it outranges")
 	}
 	if siege.HP < siege.MaxHP {
@@ -493,6 +520,93 @@ func TestShotFxEmittedForRangedAndTurrets(t *testing.T) {
 	}
 }
 
+func TestSupplyCacheSpawnsClaimExpire(t *testing.T) {
+	s := newTestSim(t)
+	// Jump just before the first scheduled cache (45s).
+	s.Time = 45 - TickDT
+	step(s, TickDT)
+	if len(s.caches) != 1 {
+		t.Fatalf("expected 1 cache after 45s, got %d", len(s.caches))
+	}
+	cache := s.caches[0]
+	if cache.Lane < 0 || cache.Lane >= NumLanes {
+		t.Fatalf("cache lane out of range: %d", cache.Lane)
+	}
+	// A blue soldier standing on it claims it.
+	s.units = append(s.units, &Unit{ID: 900, Type: Soldier, Side: SideA, Lane: cache.Lane, X: cache.X, HP: 70, MaxHP: 70, Damage: 9})
+	before := coinBalance(s, SideA)
+	s.stepCaches()
+	if len(s.caches) != 0 {
+		t.Fatal("cache should be collected by the nearby unit")
+	}
+	if got := coinBalance(s, SideA) - before; got != cache.Amount {
+		t.Fatalf("cache paid %d, want %d", got, cache.Amount)
+	}
+	// A second cache: let it expire untouched.
+	s.nextCacheIdx = 1
+	s.Time = s.cfg.Cache.Times[1] - TickDT
+	step(s, TickDT)
+	if len(s.caches) != 1 {
+		t.Fatalf("expected second cache, got %d", len(s.caches))
+	}
+	s.Time = s.caches[0].ExpiresAt + 0.01
+	s.stepCaches()
+	if len(s.caches) != 0 {
+		t.Fatal("expired cache should vanish")
+	}
+}
+
+func TestDoubleKillStreakAndStats(t *testing.T) {
+	s := newTestSim(t)
+	cfg := DefaultBalance()
+	_ = cfg
+	// Two 1-HP enemies adjacent to one blue soldier.
+	s.units = append(s.units,
+		&Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 50, HP: 70, MaxHP: 70, Damage: 9, LastHitBy: -1},
+		&Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 50.5, HP: 1, MaxHP: 70, Damage: 9, LastHitBy: -1},
+		&Unit{ID: 3, Type: Soldier, Side: SideB, Lane: 0, X: 49.5, HP: 1, MaxHP: 70, Damage: 9, LastHitBy: -1},
+	)
+	s.nextUnitID = 4
+	step(s, 2.5) // soldier needs ~1s between attacks to land both kills
+	snap := s.Snapshot()
+	if snap.Players[0].Kills != 2 {
+		t.Fatalf("blue kills = %d, want 2", snap.Players[0].Kills)
+	}
+	if snap.Players[1].UnitsLost != 2 {
+		t.Fatalf("red units lost = %d, want 2", snap.Players[1].UnitsLost)
+	}
+	if snap.Players[0].DamageDealt <= 0 {
+		t.Fatal("blue damage dealt should be > 0")
+	}
+	found := false
+	for _, e := range snap.Events {
+		if e.Kind == "streak" && e.Amount >= 2 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a streak event in %+v", snap.Events)
+	}
+}
+
+func TestTurretDamageTracked(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 1000)
+	giveCoins(s, SideB, 1000)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
+		t.Fatal(err)
+	}
+	ram := &Unit{ID: 1, Type: Ram, Side: SideA, Lane: 0, X: 88, HP: 170, MaxHP: 170, Damage: 4, LastHitBy: -1}
+	s.units = append(s.units, ram)
+	s.nextUnitID = 2
+	ram.Cooldown = 0
+	step(s, 1.0)
+	snap := s.Snapshot()
+	if snap.Players[0].DamageDealt <= 0 {
+		t.Fatal("ram damage vs turret was not tracked")
+	}
+}
+
 func TestFirstBloodEventOnce(t *testing.T) {
 	s := newTestSim(t)
 	s.units = append(s.units,
@@ -531,5 +645,101 @@ func TestTurretFocusesMostAdvancedTarget(t *testing.T) {
 	}
 	if farFromBase.HP != 200 {
 		t.Fatal("turret failed to focus the most advanced enemy first")
+	}
+}
+
+func TestRamCannotDamageUnits(t *testing.T) {
+	s := newTestSim(t)
+	// Enemy soldier right next to the ram, no turrets anywhere: the ram must
+	// walk past it without attacking.
+	ram := &Unit{ID: 1, Type: Ram, Side: SideA, Lane: 0, X: 20, HP: 170, MaxHP: 170, Damage: 4, LastHitBy: -1}
+	soldier := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 21, HP: 70, MaxHP: 70, Damage: 9}
+	s.units = append(s.units, ram, soldier)
+	s.nextUnitID = 3
+	ram.Cooldown = 0
+	step(s, 1.0)
+	if soldier.HP != 70 {
+		t.Fatalf("ram attacked a unit (hp=%v); rams may only target turrets", soldier.HP)
+	}
+	if ram.X == 20 {
+		t.Fatal("ram did not advance with no turret in range")
+	}
+}
+
+func TestSiegeCannotDamageUnits(t *testing.T) {
+	s := newTestSim(t)
+	// Enemy soldier well inside the siege's firing band, no turrets: no shots.
+	siege := &Unit{ID: 1, Type: Siege, Side: SideA, Lane: 0, X: 50, HP: 85, MaxHP: 85, Damage: 30}
+	soldier := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 65, HP: 70, MaxHP: 70, Damage: 9}
+	s.units = append(s.units, siege, soldier)
+	s.nextUnitID = 3
+	step(s, 2.5)
+	if soldier.HP != 70 {
+		t.Fatalf("siege attacked a unit (hp=%v); sieges may only target turrets", soldier.HP)
+	}
+}
+
+func TestTurretUpgradeTargetsSpecificSlot(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 1000)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+		t.Fatal(err)
+	}
+	// Upgrade only slot 1.
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.turrets[SideA][0][0].Level; got != 0 {
+		t.Fatalf("slot 0 level = %d, want 0 (untouched)", got)
+	}
+	if got := s.turrets[SideA][0][1].Level; got != 1 {
+		t.Fatalf("slot 1 level = %d, want 1", got)
+	}
+	// Slot out of range is rejected.
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: TurretSlots}); !errors.Is(err, ErrInvalidSlot) {
+		t.Fatalf("want ErrInvalidSlot, got %v", err)
+	}
+	// Upgrading an empty slot fails.
+	s2 := newTestSim(t)
+	giveCoins(s2, SideA, 1000)
+	if err := s2.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s2.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 3, Slot: 1}); !errors.Is(err, ErrNoTurret) {
+		t.Fatalf("want ErrNoTurret, got %v", err)
+	}
+	// Negative slot falls back to the lowest built slot.
+	if err := s2.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 3, Slot: -1}); err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.turrets[SideA][3][0].Level; got != 1 {
+		t.Fatalf("default-slot upgrade hit the wrong turret: level %d", got)
+	}
+}
+
+func TestTurretCostIsSeventy(t *testing.T) {
+	s := newTestSim(t)
+	if got := s.Balance().Turret.Cost; got != 70 {
+		t.Fatalf("turret cost = %d, want 70", got)
+	}
+}
+
+func TestSnapshotReportsTurretSlots(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 1000)
+	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2})
+	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2})
+	snap := s.Snapshot()
+	var slots []int
+	for _, tr := range snap.Turrets {
+		if tr.Side == SideA && tr.Lane == 2 {
+			slots = append(slots, tr.Slot)
+		}
+	}
+	if len(slots) != 2 || slots[0] != 0 || slots[1] != 1 {
+		t.Fatalf("snapshot slots = %v, want [0 1]", slots)
 	}
 }

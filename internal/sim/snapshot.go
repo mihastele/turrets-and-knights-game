@@ -17,6 +17,7 @@ type Snapshot struct {
 	Players       [2]PlayerSnapshot `json:"players"`
 	Units         []UnitSnapshot    `json:"units"`
 	Turrets       []TurretSnapshot  `json:"turrets"`
+	Caches        []CacheSnapshot   `json:"caches"`
 	Events        []Event           `json:"events"`
 	Fx            []FxEvent         `json:"fx"`
 }
@@ -26,6 +27,18 @@ type PlayerSnapshot struct {
 	Income       int              `json:"income"` // per economy interval, factory included
 	Factory      bool             `json:"factory"`
 	UnitUpgrades map[UnitType]int `json:"unitUpgrades"`
+	DamageDealt  int              `json:"damageDealt"`
+	Kills        int              `json:"kills"`
+	UnitsLost    int              `json:"unitsLost"`
+	TurretsDown  int              `json:"turretsDown"`
+}
+
+// CacheSnapshot describes a supply cache currently on the field.
+type CacheSnapshot struct {
+	Lane      int     `json:"lane"`
+	X         float64 `json:"x"`
+	Amount    int     `json:"amount"`
+	ExpiresIn float64 `json:"expiresIn"` // seconds until it vanishes
 }
 
 type UnitSnapshot struct {
@@ -42,6 +55,7 @@ type UnitSnapshot struct {
 type TurretSnapshot struct {
 	Side   int     `json:"side"`
 	Lane   int     `json:"lane"`
+	Slot   int     `json:"slot"`
 	Level  int     `json:"level"`
 	HP     float64 `json:"hp"`
 	MaxHP  float64 `json:"maxHp"`
@@ -73,10 +87,23 @@ func (s *Sim) Snapshot() Snapshot {
 			Income:       p.IncomePerInterval(s.cfg),
 			Factory:      p.Factory,
 			UnitUpgrades: copyUpgrades(p.UnitUpgrades),
+			DamageDealt:  int(p.DamageDealt + 0.5),
+			Kills:        p.Kills,
+			UnitsLost:    p.UnitsLost,
+			TurretsDown:  p.TurretsDown,
 		}
 	}
 	snap.Units = make([]UnitSnapshot, 0, len(s.units))
-	snap.Turrets = make([]TurretSnapshot, 0, 4)
+	snap.Turrets = make([]TurretSnapshot, 0, 2*NumLanes*TurretSlots)
+	snap.Caches = make([]CacheSnapshot, 0, len(s.caches))
+	for _, c := range s.caches {
+		snap.Caches = append(snap.Caches, CacheSnapshot{
+			Lane:      c.Lane,
+			X:         c.X,
+			Amount:    c.Amount,
+			ExpiresIn: c.ExpiresAt - s.Time,
+		})
+	}
 	for _, u := range s.units {
 		snap.Units = append(snap.Units, UnitSnapshot{
 			ID: u.ID, Type: u.Type, Side: u.Side, Lane: u.Lane,
@@ -85,11 +112,13 @@ func (s *Sim) Snapshot() Snapshot {
 	}
 	for side := 0; side < 2; side++ {
 		for lane := 0; lane < NumLanes; lane++ {
-			if t := s.turrets[side][lane]; t != nil {
-				snap.Turrets = append(snap.Turrets, TurretSnapshot{
-					Side: t.Side, Lane: t.Lane, Level: t.Level,
-					HP: t.HP, MaxHP: t.MaxHP, Damage: t.Damage,
-				})
+			for slot := 0; slot < TurretSlots; slot++ {
+				if t := s.turrets[side][lane][slot]; t != nil {
+					snap.Turrets = append(snap.Turrets, TurretSnapshot{
+						Side: t.Side, Lane: t.Lane, Slot: t.Slot, Level: t.Level,
+						HP: t.HP, MaxHP: t.MaxHP, Damage: t.Damage,
+					})
+				}
 			}
 		}
 	}

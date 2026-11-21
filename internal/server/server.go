@@ -49,7 +49,8 @@ type room struct {
 	state     string // "waiting" | "playing" | "finished"
 	rematch   [2]bool
 	created   time.Time
-	snapEvery int // tick counter for snapshot decimation
+	snapEvery int          // tick counter for snapshot decimation
+	lastEmote [2]time.Time // per-seat emote rate limit
 }
 
 // Server owns all rooms.

@@ -24,6 +24,9 @@ const fctx = confettiCv.getContext('2d');
 
 const laneY = (lane) => FIELD.y0 + lane * LANE_H + LANE_H / 2;
 const unitY = (u) => laneY(u.lane) + (u.yOff || 0) * LANE_H;
+// Vertical offset of each turret slot within its lane (stacked pair, same x).
+const TURRET_SLOT_OFF = [-0.21, 0.21];
+const turretSlotY = (lane, slot) => laneY(lane) + (TURRET_SLOT_OFF[slot] || 0) * LANE_H;
 const fieldX = (x) => FIELD.x0 + (x / 100) * (FIELD.x1 - FIELD.x0);
 
 // ---------------------------------------------------------------------------
@@ -83,9 +86,84 @@ const SFX = (() => {
     src.connect(filter).connect(g).connect(master);
     src.start(t0);
   }
+
+  // ---- Procedural war-drums soundtrack -----------------------------
+  // A slow minor-key ostinato. Subtle in the mix; goes double-time in overtime.
+  let musicGain = null, musicTimer = null, musicStep = 0, nextNoteAt = 0, musicHot = false;
+  const BASSLINE = [55, 0, 55, 0, 65.41, 0, 49.0, 0, 55, 0, 55, 0, 73.42, 65.41, 58.27, 0]; // A A C F A A D C#-ish (A minor)
+  function mNote({ type, f, t, dur, vol, slideTo }) {
+    if (!musicGain) return;
+    const o = ctxA.createOscillator();
+    o.type = type;
+    o.frequency.setValueAtTime(f, t);
+    if (slideTo) o.frequency.exponentialRampToValueAtTime(slideTo, t + dur);
+    const g = ctxA.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.linearRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(musicGain);
+    o.start(t); o.stop(t + dur + 0.02);
+  }
+  function mNoise(t, dur, vol, type, freq) {
+    if (!musicGain) return;
+    const len = Math.max(1, Math.floor(ctxA.sampleRate * dur));
+    const buf = ctxA.createBuffer(1, len, ctxA.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = ctxA.createBufferSource();
+    src.buffer = buf;
+    const f = ctxA.createBiquadFilter();
+    f.type = type; f.frequency.value = freq;
+    const g = ctxA.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f).connect(g).connect(musicGain);
+    src.start(t);
+  }
+  function scheduleMusic() {
+    const c = ctxA;
+    if (!c || !musicGain) return;
+    const eighth = 60 / (musicHot ? 118 : 96) / 2;
+    while (nextNoteAt < c.currentTime + 0.4) {
+      const s = musicStep % 16;
+      if (muted) { // keep the sequencer in step, emit silence
+        musicStep++;
+        nextNoteAt += eighth;
+        continue;
+      }
+      const t = Math.max(nextNoteAt, c.currentTime + 0.01);
+      if (s % 4 === 0) mNote({ type: 'sine', f: 120, slideTo: 42, t, dur: 0.16, vol: 0.5 });           // kick
+      if (s === 4 || s === 12) mNoise(t, 0.09, 0.22, 'bandpass', 1800);                                // snare
+      if (s % 2 === 0) mNoise(t, 0.03, 0.06, 'highpass', 7000);                                        // hat
+      if (musicHot && s % 4 === 2) mNote({ type: 'sine', f: 110, slideTo: 40, t, dur: 0.12, vol: 0.35 }); // extra kick in overtime
+      const bass = BASSLINE[s];
+      if (bass) mNote({ type: 'sawtooth', f: bass, t, dur: eighth * 0.9, vol: 0.16 });
+      musicStep++;
+      nextNoteAt += eighth;
+    }
+  }
   let lastHit = 0;
+  function startMusic() {
+    const c = ensure(); if (!c) return;
+    stopMusic();
+    musicGain = c.createGain();
+    musicGain.gain.value = 0.5;
+    musicGain.connect(master);
+    musicStep = 0;
+    nextNoteAt = c.currentTime + 0.06;
+    musicTimer = setInterval(scheduleMusic, 90);
+  }
+  function stopMusic() {
+    if (musicTimer) clearInterval(musicTimer);
+    musicTimer = null;
+    if (musicGain) { try { musicGain.disconnect(); } catch {} }
+    musicGain = null;
+  }
   return {
     unlock() { ensure(); },
+    startMusic,
+    stopMusic,
+    setMusicHot(hot) { musicHot = !!hot; },
     toggleMute() {
       muted = !muted;
       try { localStorage.setItem('laneSiegeMuted', muted ? '1' : '0'); } catch {}
@@ -108,6 +186,8 @@ const SFX = (() => {
     },
     poof()   { tone({ type: 'sine', f: 430, f1: 120, t: 0.16, vol: 0.2 }); noise({ t: 0.08, vol: 0.1, cutoff: 900 }); },
     boom()   { noise({ t: 0.45, vol: 0.4, cutoff: 700 }); tone({ type: 'sine', f: 82, f1: 34, t: 0.5, vol: 0.5 }); },
+    cacheDrop() { tone({ type: 'sine', f: 90, f1: 46, t: 0.35, vol: 0.4 }); tone({ type: 'triangle', f: 1320, t: 0.08, vol: 0.15, delay: 0.18 }); },
+    streakHorn() { tone({ type: 'sawtooth', f: 294, t: 0.14, vol: 0.3 }); tone({ type: 'sawtooth', f: 392, t: 0.22, vol: 0.3, delay: 0.12 }); },
     windfall() { [659, 784, 988].forEach((f, i) => tone({ type: 'triangle', f, t: 0.09, vol: 0.22, delay: i * 0.07 })); },
     firstBlood() { tone({ type: 'sawtooth', f: 196, f1: 147, t: 0.45, vol: 0.3 }); },
     breach() { [147, 147, 196].forEach((f, i) => tone({ type: 'sawtooth', f, t: 0.28, vol: 0.35, delay: i * 0.22 })); },
@@ -185,6 +265,8 @@ const els = {
   sidebarBackdrop: $('sidebar-backdrop'),
   sidebarClose: $('sidebar-close'),
   rotateDismiss: $('rotate-dismiss'),
+  emoteBar: $('emote-bar'),
+  matchStats: $('match-stats'),
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +340,8 @@ function handleServerMessage(msg) {
     case 'matchStart':
       els.waiting.classList.add('hidden');
       els.shopToggle.classList.remove('hidden');
+      SFX.setMusicHot(false);
+      SFX.startMusic();
       if (isCompact()) els.shopToggle.classList.add('pulse');
       break;
     case 'snapshot':
@@ -265,6 +349,12 @@ function handleServerMessage(msg) {
       break;
     case 'matchReset':
       resetForRematch();
+      SFX.setMusicHot(false);
+      SFX.startMusic();
+      break;
+    case 'emote':
+      showEmoteBubble(msg.seat, msg.emote);
+      addFeedItem({ kind: 'emote', text: (msg.seat === state.seat ? 'You' : 'Foe') + ': ' + emoteGlyph(msg.emote) });
       break;
     case 'rematchStatus': {
       const mine = msg.seat === state.seat;
@@ -313,7 +403,7 @@ function onSnapshot(snap) {
 function handleEvent(ev) {
   switch (ev.kind) {
     case 'windfall':
-      showWindfallBanner(ev.amount || 0);
+      showBanner(`💰 Windfall! Both players +${ev.amount || 0}`, 'gold');
       SFX.windfall();
       els.coinChip && els.coinChip.classList.add('coin-pulse');
       setTimeout(() => els.coinChip && els.coinChip.classList.remove('coin-pulse'), 900);
@@ -326,6 +416,27 @@ function handleEvent(ev) {
       break;
     case 'overtime':
       SFX.firstBlood(); // dramatic low horn signals the phase change
+      SFX.setMusicHot(true);
+      break;
+    case 'supply':
+      showBanner(`📦 Supplies dropped — Lane ${(ev.lane ?? 0) + 1}!`, 'blue');
+      SFX.cacheDrop();
+      break;
+    case 'supplyClaim': {
+      const lane = ev.lane ?? 0;
+      goldBurst(px(50), laneY(lane));
+      fx.floaters.push({
+        x: px(50), y: laneY(lane) - 10, vy: -45, life: 1.1, maxLife: 1.1,
+        text: '+' + (ev.amount || 0) + 'c', color: '#fde047',
+      });
+      SFX.windfall();
+      break;
+    }
+    case 'supplyGone':
+      break; // feed only
+    case 'streak':
+      showBanner('⚔ ' + ev.text, 'red');
+      SFX.streakHorn();
       break;
     case 'breach':
       SFX.breach();
@@ -400,6 +511,7 @@ function addFeedItem(ev) {
 }
 
 function showGameOver(snap) {
+  SFX.stopMusic();
   const iWon = !snap.draw && snap.winner === state.seat;
   // Reveal confetti canvas + launch if victorious
   if (iWon) launchConfetti();
@@ -429,6 +541,16 @@ function showGameOver(snap) {
   document.querySelectorAll('.shop-item, .upgrade-btn, .turret-cell button').forEach((b) => { b.disabled = true; });
   setSidebar(false);
   els.shopToggle.classList.add('hidden');
+  // Match stats table
+  const you = snap.players[state.seat], foe = snap.players[otherSeat()];
+  const row = (label, a, b) =>
+    `<div class="ms-row"><span>${label}</span><b class="ms-you">${a}</b><b class="ms-foe">${b}</b></div>`;
+  els.matchStats.innerHTML =
+    '<div class="ms-row ms-head"><span></span><span>YOU</span><span>FOE</span></div>' +
+    row('Damage dealt', Math.round(you.damageDealt), Math.round(foe.damageDealt)) +
+    row('Kills', you.kills, foe.kills) +
+    row('Units lost', you.unitsLost, foe.unitsLost) +
+    row('Turrets destroyed', you.turretsDown, foe.turretsDown);
   state.rematchPending = false;
   els.rematchBtn.disabled = false;
   els.rematchBtn.textContent = 'Rematch';
@@ -486,7 +608,7 @@ function buildShop() {
   turretBtn.innerHTML =
     '<span class="si-key">6</span>' +
     '<div class="si-top"><span class="si-name">' + b.turret.name + '</span><span class="si-cost">' + b.turret.cost + 'c</span></div>' +
-    '<div class="si-role">Reliable lane defense. Cannot cover neighboring lanes.</div>';
+    '<div class="si-role">Two slots per lane. Reliable lane defense; turrets cannot cover neighboring lanes.</div>';
   turretBtn.addEventListener('click', () => { SFX.click(); selectTurret(); });
   els.shop.appendChild(turretBtn);
   const fac = b.economy;
@@ -520,15 +642,27 @@ function buildUpgradePanels() {
   });
 
   els.turretUpgrades.innerHTML = '';
+  const slotCount = (b.turret && b.turret.slots) || 2;
   for (let lane = 0; lane < 5; lane++) {
     const cell = document.createElement('div');
     cell.className = 'turret-cell';
     cell.dataset.lane = String(lane);
-    cell.innerHTML =
-      '<div class="tc-lane">LANE ' + (lane + 1) + '</div>' +
-      '<div class="tc-level">—</div>' +
-      '<button>Build</button>';
-    cell.querySelector('button').addEventListener('click', () => { SFX.click(); send({ type: 'upgradeTurret', lane }); });
+    let html = '<div class="tc-lane">LANE ' + (lane + 1) + '</div>';
+    for (let slot = 0; slot < slotCount; slot++) {
+      html +=
+        '<div class="tc-slot" data-slot="' + slot + '">' +
+          '<div class="tc-slot-head"><span class="tc-tag">' + String.fromCharCode(65 + slot) + '</span>' +
+          '<span class="tc-level">—</span></div>' +
+          '<button>Build</button>' +
+        '</div>';
+    }
+    cell.innerHTML = html;
+    cell.querySelectorAll('.tc-slot button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        SFX.click();
+        send({ type: 'upgradeTurret', lane, slot: Number(btn.closest('.tc-slot').dataset.slot) });
+      });
+    });
     els.turretUpgrades.appendChild(cell);
   }
 }
@@ -568,28 +702,33 @@ function updateTurretButtons(snap) {
   const you = snap.players[state.seat];
   const turrets = snap.turrets || [];
   const myTurrets = {};
-  turrets.forEach((t) => { if (t.side === state.seat) myTurrets[t.lane] = t; });
+  turrets.forEach((t) => { if (t.side === state.seat) myTurrets[t.lane + ':' + (t.slot || 0)] = t; });
   els.turretUpgrades.querySelectorAll('.turret-cell').forEach((cell) => {
     const lane = Number(cell.dataset.lane);
-    const t = myTurrets[lane];
-    const lvlEl = cell.querySelector('.tc-level');
-    const btn = cell.querySelector('button');
-    if (state.over) { btn.disabled = true; return; }
-    if (!t) {
-      lvlEl.textContent = '—';
-      btn.textContent = 'No turret';
-      btn.disabled = true;
-      return;
-    }
-    lvlEl.textContent = '●'.repeat(t.level) + '○'.repeat(2 - t.level);
-    if (t.level >= 2) {
-      btn.textContent = 'MAX';
-      btn.disabled = true;
-    } else {
-      const cost = b.turret.upgradeCosts[t.level];
-      btn.textContent = 'Up ' + cost + 'c';
-      btn.disabled = you.coins < cost || snap.overtime;
-    }
+    cell.querySelectorAll('.tc-slot').forEach((slotEl) => {
+      const slot = Number(slotEl.dataset.slot);
+      const t = myTurrets[lane + ':' + slot];
+      const lvlEl = slotEl.querySelector('.tc-level');
+      const btn = slotEl.querySelector('button');
+      if (state.over) { btn.disabled = true; return; }
+      if (!t) {
+        slotEl.classList.add('empty');
+        lvlEl.textContent = '—';
+        btn.textContent = 'Empty';
+        btn.disabled = true;
+        return;
+      }
+      slotEl.classList.remove('empty');
+      lvlEl.textContent = '●'.repeat(t.level) + '○'.repeat(2 - t.level);
+      if (t.level >= 2) {
+        btn.textContent = 'MAX';
+        btn.disabled = true;
+      } else {
+        const cost = b.turret.upgradeCosts[t.level];
+        btn.textContent = 'Up ' + cost + 'c';
+        btn.disabled = you.coins < cost || snap.overtime;
+      }
+    });
   });
   els.shop.querySelectorAll('[data-factory]').forEach((btn) => {
     btn.disabled = state.over || you.factory || you.coins < b.economy.factoryCost;
@@ -621,7 +760,7 @@ function highlightSelection() {
   });
   els.selHint.textContent = sel
     ? (sel.kind === 'turret'
-        ? (coarsePointer ? 'Tap a lane to build on your pad. Tap the turret again to cancel.' : 'Click a lane to build the turret on your pad. Right-click / Esc to cancel.')
+        ? (coarsePointer ? 'Tap a lane to build in a free slot. Tap the turret again to cancel.' : 'Click a lane to build in a free turret slot. Right-click / Esc to cancel.')
         : (coarsePointer ? 'Tap a lane to deploy. Tap the item again to cancel.' : 'Click a lane to deploy. Right-click / Esc to cancel.'))
     : (coarsePointer ? 'Tap a unit, then tap a lane.' : 'Select a unit, then click a lane. Right-click / Esc to cancel.');
 }
@@ -654,7 +793,7 @@ function ingestFx(prev, snap) {
   };
 
   for (const u of snap.units || []) track(entityKey('u', u.id), u.x, u.lane, u.yOff, u.hp, u.side, 'unit');
-  for (const t of snap.turrets || []) track(entityKey('t', t.side + ':' + t.lane), turretX(t.side), t.lane, 0, t.hp, t.side, 'turret');
+  for (const t of snap.turrets || []) track(entityKey('t', t.side + ':' + t.lane + ':' + (t.slot || 0)), turretX(t.side), t.lane, TURRET_SLOT_OFF[t.slot] || 0, t.hp, t.side, 'turret');
 
   // Entities present before but gone now → death poof / turret explosion.
   for (const [key, info] of [...fx.hpCache]) {
@@ -662,7 +801,7 @@ function ingestFx(prev, snap) {
     fx.hpCache.delete(key);
     const dy = laneY(info.lane) + info.yOff * LANE_H;
     if (info.kind === 'turret') {
-      boomAt(px(info.x), laneY(info.lane), 1.4);
+      boomAt(px(info.x), laneY(info.lane) + info.yOff * LANE_H, 1.4);
       fx.shake = Math.max(fx.shake, 7);
       SFX.boom();
     } else {
@@ -677,8 +816,9 @@ function ingestFx(prev, snap) {
       spawnProjectile(f);
       const isSiege = f.unit === 'siege';
       const isTurret = f.unit === 'turret';
+      const fy = (isTurret ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - 4;
       fx.flashes.push({
-        x: px(f.fromX), y: laneY(f.lane) - 4,
+        x: px(f.fromX), y: fy,
         r: isSiege ? 16 : isTurret ? 9 : 7,
         until: now + (isSiege ? 150 : 90),
         color: isSiege ? 'rgba(253,224,71,0.9)' : 'rgba(254,240,138,0.85)',
@@ -700,7 +840,7 @@ function turretX(side) {
 const px = (fieldX) => (fieldX / 100) * (FIELD.x1 - FIELD.x0) + FIELD.x0;
 
 function spawnProjectile(f) {
-  const y = laneY(f.lane) - 4;
+  const y = (f.unit === 'turret' ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - 4;
   const x0 = px(f.fromX), x1 = px(f.toX);
   const dist = Math.abs(x1 - x0);
   let kind = 'arrow', dur = Math.min(0.5, Math.max(0.16, dist / 620)), arc = 14;
@@ -837,6 +977,56 @@ function unitRenderX(u) {
 const P = () => performance.now();
 let lastFrame = 0;
 
+function goldBurst(x, y) {
+  for (let i = 0; i < 16; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const sp = 40 + Math.random() * 95;
+    fx.particles.push({
+      x, y,
+      vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60,
+      grav: 260, life: 0.55 + Math.random() * 0.2, maxLife: 0.75,
+      size: 1.8 + Math.random() * 2.2,
+      color: ['#fde047', '#fbbf24', '#fff7cc'][i % 3],
+    });
+  }
+  fx.rings.push({ x, y, r: 4, maxR: 48, life: 0.5, maxLife: 0.5 });
+}
+
+function drawCaches(snap, now) {
+  for (const c of snap.caches || []) {
+    const x = px(c.x);
+    const y = laneY(c.lane);
+    const pulse = 0.75 + 0.25 * Math.sin(now / 300);
+    // halo
+    const g = ctx.createRadialGradient(x, y, 2, x, y, 26);
+    g.addColorStop(0, 'rgba(253, 224, 71, ' + 0.5 * pulse + ')');
+    g.addColorStop(1, 'rgba(253, 224, 71, 0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, 26, 0, Math.PI * 2); ctx.fill();
+    // crate body
+    ctx.save();
+    ctx.translate(x, y + Math.sin(now / 420) * 2); // gentle bob
+    ctx.fillStyle = '#b45309';
+    roundRect(ctx, -11, -8, 22, 16, 3); ctx.fill();
+    ctx.fillStyle = '#f59e0b';
+    roundRect(ctx, -11, -11, 22, 8, 3); ctx.fill();
+    ctx.strokeStyle = '#78350f'; ctx.lineWidth = 1.5;
+    roundRect(ctx, -11, -11, 22, 19, 3); ctx.stroke();
+    ctx.fillStyle = '#fff7cc';
+    ctx.font = '900 12px "Segoe UI", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('$', 0, 4.5);
+    ctx.restore();
+    // expiry ring
+    const frac = Math.max(0, Math.min(1, (c.expiresIn || 0) / 25));
+    ctx.strokeStyle = frac > 0.3 ? 'rgba(254, 240, 138, 0.85)' : 'rgba(248,113,113,0.9)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 15, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * frac);
+    ctx.stroke();
+  }
+}
+
 function draw() {
   requestAnimationFrame(draw);
   const now = performance.now();
@@ -853,6 +1043,7 @@ function draw() {
   const snap = state.snapNow;
   if (snap) {
     drawPads(snap);
+    drawCaches(snap, now);
     drawTurrets(snap, now);
     drawUnits(snap, now);
     drawProjectiles();
@@ -935,27 +1126,32 @@ function drawBreachStrip(x, color, label, alpha) {
 
 function drawPads(snap) {
   const padX = [10, 90]; // field units per side
+  const turrets = snap.turrets || [];
   for (let lane = 0; lane < 5; lane++) {
     for (const side of [0, 1]) {
-      const occupied = (snap.turrets || []).some((t) => t.side === side && t.lane === lane);
-      if (occupied) continue;
-      const p = px(padX[side]);
-      const y = laneY(lane);
-      ctx.save();
-      ctx.setLineDash([5, 5]);
-      ctx.strokeStyle = side === state.seat ? 'rgba(125,211,252,0.45)' : 'rgba(148,163,184,0.22)';
-      ctx.lineWidth = 1.5;
-      roundRect(ctx, p - 16, y - 16, 32, 32, 7);
-      ctx.stroke();
-      ctx.restore();
+      for (let slot = 0; slot < TURRET_SLOT_OFF.length; slot++) {
+        const occupied = turrets.some((t) => t.side === side && t.lane === lane && (t.slot || 0) === slot);
+        if (occupied) continue;
+        const p = px(padX[side]);
+        const y = turretSlotY(lane, slot);
+        ctx.save();
+        ctx.setLineDash([5, 5]);
+        ctx.strokeStyle = side === state.seat ? 'rgba(125,211,252,0.45)' : 'rgba(148,163,184,0.22)';
+        ctx.lineWidth = 1.5;
+        roundRect(ctx, p - 16, y - 15, 32, 30, 7);
+        ctx.stroke();
+        ctx.restore();
+      }
     }
   }
 }
 
 function drawTurrets(snap, now) {
-  for (const t of snap.turrets || []) {
+  // Lower slot drawn first so the upper slot's barrel/pips sit on top.
+  const sorted = [...(snap.turrets || [])].sort((a, b) => (a.slot || 0) - (b.slot || 0));
+  for (const t of sorted) {
     const p = px(t.side === 0 ? 10 : 90);
-    const py = laneY(t.lane);
+    const py = turretSlotY(t.lane, t.slot || 0);
     const trim = t.side === 0 ? '#7dd3fc' : '#fda4af';
     const body = t.side === 0 ? '#1e4fd8' : '#b91c3c';
     const bodyDark = t.side === 0 ? '#152f6e' : '#6f1526';
@@ -994,14 +1190,14 @@ function drawTurrets(snap, now) {
     ctx.lineTo(p + dir * (18 - recoil), py - 2);
     ctx.stroke();
 
-    // level pips
+    // level pips on the dark lower plate
     for (let i = 0; i < t.level; i++) {
       ctx.fillStyle = '#fde047';
       ctx.beginPath();
-      ctx.arc(p - 8 + i * 8, py + 25, 2.4, 0, Math.PI * 2);
+      ctx.arc(p - 4 + i * 8, py + 8, 2.2, 0, Math.PI * 2);
       ctx.fill();
     }
-    drawHealthBar(p - 21, py - 28, 42, 5, t.hp / t.maxHp);
+    drawHealthBar(p - 18, py + 17, 36, 4, t.hp / t.maxHp);
   }
 }
 
@@ -1220,15 +1416,12 @@ function roundRect(ctx, x, y, w, h, r) {
 // ---------------------------------------------------------------------------
 // Windfall banner + confetti + toast
 // ---------------------------------------------------------------------------
-let windfallTimer = null;
-function showWindfallBanner(amount) {
-  els.windfall.textContent = `💰 Windfall! Both players +${amount} coins`;
-  els.windfall.classList.remove('hidden');
-  els.windfall.classList.remove('pop');
-  void els.windfall.offsetWidth; // restart animation
-  els.windfall.classList.add('pop');
-  clearTimeout(windfallTimer);
-  windfallTimer = setTimeout(() => els.windfall.classList.add('hidden'), 2400);
+let bannerTimer = null;
+function showBanner(text, variant) {
+  els.windfall.textContent = text;
+  els.windfall.className = 'windfall-banner pop ' + (variant || 'gold');
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => els.windfall.classList.add('hidden'), 2400);
 }
 
 function showToast(msg, ok) {
@@ -1365,6 +1558,7 @@ async function tryResume() {
 
 function backToMenu() {
   SS.clear();
+  SFX.stopMusic();
   if (state.ws) { try { state.ws.close(); } catch {} }
   state.ws = null;
   state.snapNow = null;
@@ -1411,6 +1605,32 @@ $('btn-rematch').addEventListener('click', () => {
   els.rematchStatus.textContent = 'Rematch requested — waiting for opponent…';
   send({ type: 'rematch' });
 });
+
+// Quick emotes — send a reaction, see it bubble over your side of the field.
+const EMOTES = { nice: '👏', gg: '🤝', lol: '😂', ouch: '😖', wow: '😱' };
+function emoteGlyph(id) { return EMOTES[id] || '❔'; }
+let lastEmoteSent = 0;
+function showEmoteBubble(seat, emote) {
+  const wrap = $('canvas-wrap');
+  const div = document.createElement('div');
+  div.className = 'emote-bubble ' + (seat === state.seat ? 'mine' : 'foe');
+  div.textContent = emoteGlyph(emote);
+  wrap.appendChild(div);
+  setTimeout(() => div.remove(), 1900);
+}
+if (els.emoteBar) {
+  els.emoteBar.addEventListener('click', (e) => {
+    const btn = e.target.closest('.emote-btn');
+    if (!btn) return;
+    const now = Date.now();
+    if (now - lastEmoteSent < 1500) { showToast('Easy there — one emote every moment.', false); return; }
+    lastEmoteSent = now;
+    SFX.click();
+    send({ type: 'emote', emote: btn.dataset.emote });
+    btn.classList.add('cooling');
+    setTimeout(() => btn.classList.remove('cooling'), 1500);
+  });
+}
 
 // Resign: two-step confirm so nobody throws a match by accident.
 let resignArmed = false;

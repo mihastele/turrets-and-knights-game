@@ -71,6 +71,13 @@
           <span id="coins-foe" class="pc-coins">0</span>
           <span id="income-foe" class="pc-income">+10/5s</span>
         </div>
+        <div class="emote-bar" id="emote-bar" aria-label="Quick reactions">
+          <button class="emote-btn" data-emote="nice" title="Nice!">👏</button>
+          <button class="emote-btn" data-emote="lol" title="LOL">😂</button>
+          <button class="emote-btn" data-emote="ouch" title="Ouch">😖</button>
+          <button class="emote-btn" data-emote="wow" title="Wow">😱</button>
+          <button class="emote-btn" data-emote="gg" title="GG">🤝</button>
+        </div>
         <button id="btn-mute" class="btn btn-ghost btn-small mute-btn" title="Toggle sound">🔊</button>
       </div>
     </header>
@@ -96,6 +103,7 @@
           <div class="overlay-card">
             <h2 id="result-title">VICTORY</h2>
             <p id="result-detail">Breach in lane 3</p>
+            <div id="match-stats" class="match-stats"></div>
             <div class="overlay-actions">
               <button id="btn-rematch" class="btn btn-primary">Rematch</button>
               <button id="btn-back-menu" class="btn btn-secondary">Main menu</button>

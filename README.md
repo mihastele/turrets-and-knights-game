@@ -119,6 +119,24 @@ Environment=PORT=8180
 WantedBy=multi-user.target
 ```
 
+### One-command Linux deploy
+
+`deploy-cloudflare.sh` turns a bare Linux box into a hosted instance: installs
+a current Go toolchain if needed (with checksum verification), builds a static
+binary, installs it as a hardened systemd service (`lanesiege.service`,
+dedicated user, bound to `127.0.0.1:$PORT`, default 8180), health-checks it,
+and opens a cloudflared quick tunnel so you get a public `*.trycloudflare.com`
+URL immediately. No Cloudflare account required for a quick tunnel.
+
+```sh
+chmod +x deploy-cloudflare.sh
+sudo ./deploy-cloudflare.sh                 # PORT=9000 to override
+```
+
+It's idempotent and safe to re-run; Ctrl+C stops only the tunnel, the game
+keeps running under systemd. Prefer named tunnels or your own domain for
+anything longer-lived.
+
 ### Fly.io / Render / similar
 
 Deploy as a **single-machine Docker web service**. Both set `PORT` for you;
@@ -156,8 +174,10 @@ lane), play as usual. Large screens keep the classic fixed sidebar.
   5–10 every 12–20s** rolled once for both players.
 - A **Coin Factory** (55c) adds **+5 every 5s**; it pays back in ~55s. One
   per player.
-- **Turrets** (45c) stop lone attackers but not an escorted ram. **Siege
-  engines** outrange turrets but die to anything that reaches them.
+- **Turrets** (70c, **two per lane**) stop lone attackers but not an escorted ram.
+  Only soldiers, bowmen and knights fight troops — **rams and siege engines damage
+  turrets only** and cannot hurt units. **Siege engines** outrange turrets but die
+  to anything that reaches them.
   **Knights** punish open lanes but lose straight fights against equal coin
   in soldiers. **Bowmen** shoot over your frontline but fold up close.
 - **Unit upgrades** apply to future spawns only; **turret upgrades** apply in
@@ -178,7 +198,7 @@ cmd/lanesiege/     entry point (flags, PORT env, graceful shutdown)
 embed.go           //go:embed web — the client inside the binary
 internal/sim/      game simulation — pure Go, no I/O, no network
   balance.go       ALL tunable numbers (prices, HP, damage, ranges, timers)
-  sim.go           tick loop, combat, economy, overtime, win detection
+  sim.go           tick loop, combat, economy, supply caches, streaks, win detection
   snapshot.go      the wire snapshot sent to clients
 internal/server/   HTTP + WebSocket rooms, lobby, match ownership
   server.go        create/join/rejoin, health, static files, room lifecycle
@@ -206,8 +226,9 @@ go test ./...          # everything, incl. ~20s end-to-end match over real HTTP+
 go test -short ./...   # skip the end-to-end test
 ```
 
-Coverage includes spending, insufficient funds, invalid lanes, pad occupancy,
-factory limit, shared seeded windfall (identical across same-seed sims),
+Coverage includes spending, insufficient funds, invalid lanes, turret slot occupancy
+(two slots per lane), slot-targeted turret upgrades, factory limit, shared seeded
+windfall (identical across same-seed sims),
 future-only unit upgrades, non-healing turret upgrades, overtime lockout and
 damage decay to zero, simultaneous-breach draw, time-limit draw, ram vs.
 turret prioritization, soldier-ignores-turret, siege min-range, turret target
@@ -224,17 +245,27 @@ deterministic per seed, so you can replay a specific line with
 
 - **Five lanes, two war economies** — shared windfalls, a coin factory you
   must pay down before it beats an early enemy rush, public ledgers.
-- **Five units, a turret, upgrades twice deep** — counters matted in matching
-  paper-rock-scissors: soldiers > knights, bowmen > fragile damage, rams >
-  turrets, siege engines > static defenses.
+- **Supply caches** drop mid-field at 45s, 2:30 and 4:20 — roughly +30 coins
+  for the first army to walk over one. The bridge of a lane is a battlefield,
+  not just a path.
+- **Five units, paired turrets, upgrades twice deep** — two turret slots per
+  lane; troops-vs-structures targeting (rams and siege engines can't touch
+  units; soldiers, bowmen and knights can't touch turrets); counters matted in
+  matching paper-rock-scissors: soldiers > knights, bowmen > fragile damage,
+  rams > turrets, siege engines > static defenses.
+- **Kill streaks** — double kills, triple kills and rampages get announced
+  with a horn blast.
+- **Match report** — damage dealt, kills, units lost and turrets destroyed
+  for both sides on the game-over screen.
+- **Quick emotes** (👏 😂 😖 😱 🤝) — trash talk without typing.
 - **Match structure** — 100-coin start, win by beaching a unit; 6:00
   overtime (turrets disarmed); 10:00 draw; simultaneous breach is a draw;
   resign with two clicks.
 - **Game feel** — projectiles with arcs (arrows, tracer rounds, plunging
-  shells with explosions), damage numbers, unit death poofs, muzzle flashes,
-  hit flashes, screen shake on turret kills, a breach-warning siren when an
-  enemy gets close to your line, windfall fanfare, confetti on victory, and a
-  full synthesized soundscape (no assets) with a mute toggle.
+  shells with explosions), damage numbers, death poofs, muzzle flashes, hit
+  flashes, screen shake on turret kills, a breach-warning siren when an enemy
+  nears your line, windfall fanfare, confetti on victory, and a full
+  synthesized war-drum soundtrack (with mute).
 - **Readable chaos** — team-colored units with shadows and walk bob, per-lane
   HP bars, dashed pad outlines, and an event feed for everything that matters.
 
@@ -242,11 +273,15 @@ deterministic per seed, so you can replay a specific line with
 
 - `go vet`, `gofmt` clean; all tests pass, including the HTTP+WS end-to-end
   tests (full match, resign forfeit, room guards).
+- Game logic covered by unit tests: seeded cache spawn/claim/expiry, kill
+  streak detection, damage attribution, live stats in snapshots.
 - Two-browser (headless Edge) matches: create → join → deploy → turret →
-  factory → breach → victory/defeat overlays → rematch; resign flow; windfall
-  banner and first-blood feed observed in live play; zero console errors.
-- Docker image rebuilt and re-verified after the FX pass (serves embedded
-  client, `/healthz`, full match playable).
+  factory → breach → victory/defeat → rematch; resign flow; windfall banner
+  and first blood in the feed; supply-cache spawn verified live (crate
+  renders mid-field with halo and expiry ring); emotes end-to-end; zero
+  console errors.
+- Docker image rebuilt and re-verified after the content update (serves the
+  new client; `/healthz` ok).
 - One-command public tunnel (`cloudflared`) verified end-to-end: page, API,
   WebSocket upgrade.
 - Not yet verified by a human: actual *fun* — balance may need a pass.
