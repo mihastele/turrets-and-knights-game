@@ -18,6 +18,7 @@ type Snapshot struct {
 	Units         []UnitSnapshot    `json:"units"`
 	Turrets       []TurretSnapshot  `json:"turrets"`
 	Events        []Event           `json:"events"`
+	Fx            []FxEvent         `json:"fx"`
 }
 
 type PlayerSnapshot struct {
@@ -33,6 +34,7 @@ type UnitSnapshot struct {
 	Side  int      `json:"side"`
 	Lane  int      `json:"lane"`
 	X     float64  `json:"x"`
+	YOff  float64  `json:"yOff"`
 	HP    float64  `json:"hp"`
 	MaxHP float64  `json:"maxHp"`
 }
@@ -62,6 +64,7 @@ func (s *Sim) Snapshot() Snapshot {
 		TimeLimit:     s.cfg.Overtime.DrawAt,
 		OvertimeStart: s.cfg.Overtime.Start,
 		Events:        emptyIfNil(s.DrainEvents()),
+		Fx:            emptyIfNil(s.DrainFx()),
 	}
 	for i := 0; i < 2; i++ {
 		p := &s.players[i]
@@ -77,7 +80,7 @@ func (s *Sim) Snapshot() Snapshot {
 	for _, u := range s.units {
 		snap.Units = append(snap.Units, UnitSnapshot{
 			ID: u.ID, Type: u.Type, Side: u.Side, Lane: u.Lane,
-			X: u.X, HP: u.HP, MaxHP: u.MaxHP,
+			X: u.X, YOff: u.YOff, HP: u.HP, MaxHP: u.MaxHP,
 		})
 	}
 	for side := 0; side < 2; side++ {

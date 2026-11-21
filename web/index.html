@@ -61,7 +61,7 @@
       </div>
 
       <div class="tb-group tb-right">
-        <div class="player-chip you">
+        <div class="player-chip you" id="coin-chip-you">
           <span class="pc-label">YOU</span>
           <span id="coins-you" class="pc-coins">0</span>
           <span id="income-you" class="pc-income">+10/5s</span>
@@ -71,12 +71,16 @@
           <span id="coins-foe" class="pc-coins">0</span>
           <span id="income-foe" class="pc-income">+10/5s</span>
         </div>
+        <button id="btn-mute" class="btn btn-ghost btn-small mute-btn" title="Toggle sound">🔊</button>
       </div>
     </header>
 
     <main id="game-main">
       <div id="canvas-wrap">
         <canvas id="battlefield" width="1160" height="620"></canvas>
+
+        <div id="windfall-banner" class="windfall-banner hidden">💰 Windfall!</div>
+        <div id="breach-warning" class="breach-warning hidden">⚠ BREACH IMMINENT</div>
 
         <div id="waiting-overlay" class="overlay">
           <div class="overlay-card">
@@ -129,6 +133,7 @@
   </div>
 
   <div id="toast" class="toast hidden"></div>
+  <canvas id="confetti" class="hidden"></canvas>
 
   <script src="/client.js"></script>
 </body>

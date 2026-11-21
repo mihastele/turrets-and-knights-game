@@ -460,6 +460,61 @@ func TestSiegeOutrangesTurret(t *testing.T) {
 	}
 }
 
+func TestShotFxEmittedForRangedAndTurrets(t *testing.T) {
+	s := newTestSim(t)
+	// Bowman vs enemy in lane 0.
+	bowman := &Unit{ID: 1, Type: Bowman, Side: SideA, Lane: 0, X: 50, HP: 45, MaxHP: 45, Damage: 12}
+	enemy := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 60, HP: 70, MaxHP: 70, Damage: 9}
+	s.units = append(s.units, bowman, enemy)
+	s.nextUnitID = 3
+	s.stepUnits(TickDT)
+	fx := s.DrainFx()
+	found := false
+	for _, f := range fx {
+		if f.Kind == "shot" && f.Unit == "bowman" && f.FromX == 50 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a bowman shot fx, got %+v", fx)
+	}
+
+	// Soldier (melee) attacking: expect "melee", not "shot".
+	s2 := newTestSim(t)
+	sa := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 1, X: 50, HP: 70, MaxHP: 70, Damage: 9}
+	sb := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 1, X: 51, HP: 70, MaxHP: 70, Damage: 9}
+	s2.units = append(s2.units, sa, sb)
+	s2.nextUnitID = 3
+	s2.stepUnits(TickDT)
+	for _, f := range s2.DrainFx() {
+		if f.Unit == "soldier" && f.Kind != "melee" {
+			t.Fatalf("soldier attack should be melee fx, got %+v", f)
+		}
+	}
+}
+
+func TestFirstBloodEventOnce(t *testing.T) {
+	s := newTestSim(t)
+	s.units = append(s.units,
+		&Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 50, HP: 1, MaxHP: 70, Damage: 0},
+		&Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 1, X: 60, HP: 1, MaxHP: 70, Damage: 0},
+	)
+	s.units[0].HP = 0 // dies now
+	s.units[1].HP = 0
+	s.nextUnitID = 3
+	s.removeDead()
+	events := s.DrainEvents()
+	count := 0
+	for _, e := range events {
+		if e.Kind == "firstBlood" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one firstBlood event, got %d (%+v)", count, events)
+	}
+}
+
 func TestTurretFocusesMostAdvancedTarget(t *testing.T) {
 	s := newTestSim(t)
 	giveCoins(s, SideA, 1000)

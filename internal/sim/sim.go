@@ -60,6 +60,7 @@ type Unit struct {
 	Side     int      `json:"side"`
 	Lane     int      `json:"lane"`
 	X        float64  `json:"x"`
+	YOff     float64  `json:"yOff"` // cosmetic lane-offset in lane-height fractions (-0.31..0.31)
 	HP       float64  `json:"hp"`
 	MaxHP    float64  `json:"maxHp"`
 	Damage   float64  `json:"damage"`
@@ -100,10 +101,32 @@ func (p *Player) IncomePerInterval(cfg Balance) int {
 // ---------------------------------------------------------------------------
 
 type Event struct {
-	Tick int64  `json:"tick"`
-	Side int    `json:"side"` // SideA, SideB, or SideNone for global news
-	Kind string `json:"kind"` // "windfall", "overtime", "turretDestroyed", ...
-	Text string `json:"text"`
+	Tick   int64  `json:"tick"`
+	Side   int    `json:"side"` // SideA, SideB, or SideNone for global news
+	Kind   string `json:"kind"` // "windfall", "overtime", "turretDestroyed", ...
+	Text   string `json:"text"`
+	Amount int    `json:"amount,omitempty"` // windfall amount, so clients can animate it
+}
+
+// FxEvent is a purely cosmetic combat effect (projectile, melee spark) for
+// clients to render. It carries no gameplay information.
+type FxEvent struct {
+	Kind  string  `json:"kind"` // "shot" | "melee"
+	Unit  string  `json:"unit"` // shooter/attacker type ("turret" for turrets)
+	Side  int     `json:"side"`
+	Lane  int     `json:"lane"`
+	FromX float64 `json:"fromX"`
+	ToX   float64 `json:"toX"`
+}
+
+// DrainFx returns and clears pending FX events (drained by Snapshot).
+func (s *Sim) DrainFx() []FxEvent {
+	if len(s.fx) == 0 {
+		return nil
+	}
+	out := s.fx
+	s.fx = nil
+	return out
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +158,8 @@ type Sim struct {
 
 	nextUnitID int64
 	events     []Event
+	fx         []FxEvent
+	firstBlood bool
 }
 
 // New creates a fresh match. seed makes the shared windfall sequence
@@ -235,6 +260,7 @@ func (s *Sim) ApplyAction(a Action) error {
 			Side:     a.Side,
 			Lane:     a.Lane,
 			X:        x,
+			YOff:     (s.rng.Float64() - 0.5) * 0.62,
 			HP:       ub.MaxHP * hpMul,
 			MaxHP:    ub.MaxHP * hpMul,
 			Damage:   ub.Damage * dmgMul,
@@ -374,6 +400,7 @@ func (s *Sim) Step(dt float64) {
 			s.players[side].Coins += amount
 		}
 		s.addEvent(SideNone, "windfall", "Windfall! Both players gain %d coins", amount)
+		s.events[len(s.events)-1].Amount = amount
 		s.windfallIn = s.rollWindfallGap()
 	}
 
@@ -432,6 +459,7 @@ func (s *Sim) stepUnits(dt float64) {
 			if u.Cooldown <= 0 {
 				t.HP -= u.Damage
 				u.Cooldown = s.cfg.Units[u.Type].AttackInterval
+				s.emitAttackFx(u, t.X)
 			}
 		case *Turret:
 			if u.Cooldown <= 0 {
@@ -442,6 +470,7 @@ func (s *Sim) stepUnits(dt float64) {
 				}
 				t.HP -= dmg
 				u.Cooldown = s.cfg.Units[u.Type].AttackInterval
+				s.emitAttackFx(u, t.X)
 			}
 		default:
 			u.X += direction(u.Side) * ub.Speed * dt
@@ -551,6 +580,16 @@ func (s *Sim) nearestEnemyDist(u *Unit) (float64, bool) {
 	return d, found
 }
 
+// emitAttackFx records a cosmetic shot/melee event for clients to render.
+// Bowman and siege units fire projectiles; everything else is a melee swing.
+func (s *Sim) emitAttackFx(u *Unit, targetX float64) {
+	kind := "melee"
+	if u.Type == Bowman || u.Type == Siege {
+		kind = "shot"
+	}
+	s.fx = append(s.fx, FxEvent{Kind: kind, Unit: string(u.Type), Side: u.Side, Lane: u.Lane, FromX: u.X, ToX: targetX})
+}
+
 func (s *Sim) stepTurrets(dt float64) {
 	for side := 0; side < 2; side++ {
 		for lane := 0; lane < NumLanes; lane++ {
@@ -577,6 +616,7 @@ func (s *Sim) stepTurrets(dt float64) {
 			if target != nil && t.Cooldown <= 0 {
 				target.HP -= t.Damage * s.TurretFactor
 				t.Cooldown = s.cfg.Turret.AttackInterval
+				s.fx = append(s.fx, FxEvent{Kind: "shot", Unit: "turret", Side: side, Lane: lane, FromX: t.X, ToX: target.X})
 			}
 		}
 	}
@@ -628,6 +668,11 @@ func (s *Sim) removeDead() {
 	for _, u := range s.units {
 		if u.HP > 0 {
 			kept = append(kept, u)
+			continue
+		}
+		if !s.firstBlood {
+			s.firstBlood = true
+			s.addEvent(SideNone, "firstBlood", "First blood in lane %d!", u.Lane+1)
 		}
 	}
 	for i := len(kept); i < len(s.units); i++ {

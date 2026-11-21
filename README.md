@@ -212,17 +212,35 @@ Compare equal coin investments, not unit-vs-unit in a vacuum. The sim is
 deterministic per seed, so you can replay a specific line with
 `sim.New(seed, balance)`.
 
+## What's in the game
+
+- **Five lanes, two war economies** — shared windfalls, a coin factory you
+  must pay down before it beats an early enemy rush, public ledgers.
+- **Five units, a turret, upgrades twice deep** — counters matted in matching
+  paper-rock-scissors: soldiers > knights, bowmen > fragile damage, rams >
+  turrets, siege engines > static defenses.
+- **Match structure** — 100-coin start, win by beaching a unit; 6:00
+  overtime (turrets disarmed); 10:00 draw; simultaneous breach is a draw;
+  resign with two clicks.
+- **Game feel** — projectiles with arcs (arrows, tracer rounds, plunging
+  shells with explosions), damage numbers, unit death poofs, muzzle flashes,
+  hit flashes, screen shake on turret kills, a breach-warning siren when an
+  enemy gets close to your line, windfall fanfare, confetti on victory, and a
+  full synthesized soundscape (no assets) with a mute toggle.
+- **Readable chaos** — team-colored units with shadows and walk bob, per-lane
+  HP bars, dashed pad outlines, and an event feed for everything that matters.
+
 ## Verified
 
 - `go vet`, `gofmt` clean; all tests pass, including the HTTP+WS end-to-end
   tests (full match, resign forfeit, room guards).
 - Two-browser (headless Edge) matches: create → join → deploy → turret →
-  factory → breach → victory/defeat overlays → rematch; resign flow; zero
-  console errors.
-- `docker build` + `docker run` verified: container serves the game, passes
-  `/healthz`, and ran a full match.
-- One-command public tunnel (`cloudflared tunnel --url http://localhost:8080`)
-  verified: page, API and WebSocket upgrade all work through it.
+  factory → breach → victory/defeat overlays → rematch; resign flow; windfall
+  banner and first-blood feed observed in live play; zero console errors.
+- Docker image rebuilt and re-verified after the FX pass (serves embedded
+  client, `/healthz`, full match playable).
+- One-command public tunnel (`cloudflared`) verified end-to-end: page, API,
+  WebSocket upgrade.
 - Not yet verified by a human: actual *fun* — balance may need a pass.
 
 ## Known limits
