@@ -150,6 +150,16 @@ const fx = {
 };
 
 const $ = (id) => document.getElementById(id);
+// Compact (phone/tablet) mode: sidebar becomes a drawer.
+const mqCompact = window.matchMedia('(max-width: 1024px), (max-height: 560px)');
+const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+const isCompact = () => mqCompact.matches;
+function setSidebar(open) {
+  const willOpen = open === undefined ? !els.sidebar.classList.contains('open') : open;
+  els.sidebar.classList.toggle('open', willOpen);
+  els.sidebarBackdrop.classList.toggle('hidden', !willOpen);
+  if (willOpen) els.shopToggle.classList.remove('pulse');
+}
 const els = {
   lobby: $('screen-lobby'), game: $('screen-game'),
   lobbyError: $('lobby-error'),
@@ -170,6 +180,11 @@ const els = {
   windfall: $('windfall-banner'),
   breachWarn: $('breach-warning'),
   muteBtn: $('btn-mute'),
+  shopToggle: $('shop-toggle'),
+  sidebar: $('sidebar'),
+  sidebarBackdrop: $('sidebar-backdrop'),
+  sidebarClose: $('sidebar-close'),
+  rotateDismiss: $('rotate-dismiss'),
 };
 
 // ---------------------------------------------------------------------------
@@ -242,6 +257,8 @@ function handleServerMessage(msg) {
       break;
     case 'matchStart':
       els.waiting.classList.add('hidden');
+      els.shopToggle.classList.remove('hidden');
+      if (isCompact()) els.shopToggle.classList.add('pulse');
       break;
     case 'snapshot':
       onSnapshot(msg);
@@ -410,6 +427,8 @@ function showGameOver(snap) {
     SFX.lose();
   }
   document.querySelectorAll('.shop-item, .upgrade-btn, .turret-cell button').forEach((b) => { b.disabled = true; });
+  setSidebar(false);
+  els.shopToggle.classList.add('hidden');
   state.rematchPending = false;
   els.rematchBtn.disabled = false;
   els.rematchBtn.textContent = 'Rematch';
@@ -435,6 +454,7 @@ function resetForRematch() {
   els.unitUpgrades.querySelectorAll('.upgrade-btn').forEach((b) => { b.disabled = false; });
   els.resignBtn.disabled = false;
   resetResignButton();
+  els.shopToggle.classList.remove('hidden');
   els.rematchBtn.disabled = false;
   els.rematchBtn.textContent = 'Rematch';
   showToast('Rematch started!', true);
@@ -577,8 +597,20 @@ function updateTurretButtons(snap) {
   });
 }
 
-function selectUnit(type) { state.selection = { kind: 'unit', unit: type }; highlightSelection(); }
-function selectTurret() { state.selection = { kind: 'turret' }; highlightSelection(); }
+function selectUnit(type) {
+  // Touch: tapping the selected item again cancels (no right-click available).
+  // Mouse: clicking it again just keeps it selected (spam-deploy friendly).
+  if (coarsePointer && state.selection && state.selection.kind === 'unit' && state.selection.unit === type) { clearSelection(); return; }
+  state.selection = { kind: 'unit', unit: type };
+  highlightSelection();
+  if (isCompact()) setSidebar(false); // reveal the battlefield for tap-to-deploy
+}
+function selectTurret() {
+  if (coarsePointer && state.selection && state.selection.kind === 'turret') { clearSelection(); return; }
+  state.selection = { kind: 'turret' };
+  highlightSelection();
+  if (isCompact()) setSidebar(false);
+}
 function clearSelection() { state.selection = null; highlightSelection(); }
 function highlightSelection() {
   const sel = state.selection;
@@ -588,9 +620,10 @@ function highlightSelection() {
     btn.classList.toggle('selected', !!(isUnit || isTurret));
   });
   els.selHint.textContent = sel
-    ? (sel.kind === 'turret' ? 'Click a lane to build the turret on your pad. Right-click / Esc to cancel.'
-                             : 'Click a lane to deploy. Right-click / Esc to cancel.')
-    : 'Select a unit, then click a lane. Right-click / Esc to cancel.';
+    ? (sel.kind === 'turret'
+        ? (coarsePointer ? 'Tap a lane to build on your pad. Tap the turret again to cancel.' : 'Click a lane to build the turret on your pad. Right-click / Esc to cancel.')
+        : (coarsePointer ? 'Tap a lane to deploy. Tap the item again to cancel.' : 'Click a lane to deploy. Right-click / Esc to cancel.'))
+    : (coarsePointer ? 'Tap a unit, then tap a lane.' : 'Select a unit, then click a lane. Right-click / Esc to cancel.');
 }
 
 // ---- FX ingestion (called from onSnapshot) ----
@@ -1347,6 +1380,8 @@ function backToMenu() {
   fx.shake = 0;
   els.feed.innerHTML = '';
   els.disconnect.classList.add('hidden');
+  setSidebar(false);
+  els.shopToggle.classList.remove('hidden');
   resetResignButton();
   els.resignBtn.disabled = false;
   SFX.click();
@@ -1432,9 +1467,17 @@ cv.addEventListener('mousemove', (ev) => { state.hoverLane = laneFromEvent(ev); 
 cv.addEventListener('mouseleave', () => { state.hoverLane = null; });
 cv.addEventListener('contextmenu', (ev) => { ev.preventDefault(); clearSelection(); });
 
+// Compact-mode chrome: drawer open/close, rotate-device dismiss
+els.shopToggle.addEventListener('click', () => { SFX.click(); setSidebar(); });
+els.sidebarClose.addEventListener('click', () => { SFX.click(); setSidebar(false); });
+els.sidebarBackdrop.addEventListener('click', () => setSidebar(false));
+if (els.rotateDismiss) els.rotateDismiss.addEventListener('click', () => {
+  document.getElementById('rotate-overlay').classList.add('dismissed');
+});
+
 window.addEventListener('keydown', (ev) => {
   if (state.screen !== 'game') return;
-  if (ev.key === 'Escape') { clearSelection(); return; }
+  if (ev.key === 'Escape') { clearSelection(); setSidebar(false); return; }
   const unit = HOTKEYS[ev.key];
   if (!unit) return;
   SFX.unlock();

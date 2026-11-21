@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚔️</text></svg>">
   <title>Lane Siege</title>
   <link rel="stylesheet" href="/style.css">
@@ -105,9 +105,16 @@
         </div>
 
         <div id="disconnect-banner" class="disconnect-banner hidden">Opponent disconnected — waiting for them to return…</div>
+
+        <button id="shop-toggle" class="shop-toggle" aria-label="Toggle shop">🛒 <span>SHOP</span></button>
+        <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
       </div>
 
       <aside id="sidebar">
+        <div class="sidebar-mobile-head">
+          <span>COMMAND</span>
+          <button id="sidebar-close" class="sidebar-close" aria-label="Close shop">✕</button>
+        </div>
         <section class="panel">
           <h3 class="panel-title">Deploy <span class="panel-hint">click a lane to send</span></h3>
           <div id="shop" class="shop-grid"></div>
@@ -130,6 +137,15 @@
         </section>
       </aside>
     </main>
+  </div>
+
+  <div id="rotate-overlay">
+    <div class="rotate-card">
+      <div class="rotate-icon">📱</div>
+      <h2>Rotate your device</h2>
+      <p>Lane Siege is best played in <b>landscape</b>.</p>
+      <button id="rotate-dismiss" class="btn btn-secondary btn-small">Continue anyway</button>
+    </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

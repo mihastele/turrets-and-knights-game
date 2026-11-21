@@ -139,6 +139,14 @@ Both expose the game to the public internet — anyone with the URL can open
 the lobby. Rooms still need the 4-letter code, but treat the link as
 semi-public and don't linger for weeks; it's a test tunnel, not hosting.
 
+## Play on a phone
+
+Lane Siege is playable on a phone held **in landscape**. In portrait you get
+a friendly rotate prompt (dismissible). In landscape the battlefield fills the
+screen, the top bar compacts, and the shop lives in a drawer: tap the blue
+**🛒 SHOP** button, pick a unit (the drawer auto-closes so you can tap a
+lane), play as usual. Large screens keep the classic fixed sidebar.
+
 ## How to play
 
 - Click a shop item (or press **1–5** for troops, **6** for turret, **7** for
