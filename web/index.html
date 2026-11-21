@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚔️</text></svg>">
+  <title>Lane Siege</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- ============ LOBBY ============ -->
+  <div id="screen-lobby" class="screen">
+    <div class="lobby-card">
+      <div class="logo">
+        <div class="logo-icon">⚔️</div>
+        <h1>LANE&nbsp;SIEGE</h1>
+        <p class="tagline">Five lanes. Two commanders. One breach.</p>
+      </div>
+
+      <div class="lobby-actions">
+        <button id="btn-create" class="btn btn-primary btn-big">Create Room</button>
+        <div class="divider"><span>or</span></div>
+        <form id="join-form" class="join-row">
+          <input id="join-code" class="code-input" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false">
+          <button type="submit" class="btn btn-secondary">Join</button>
+        </form>
+      </div>
+
+      <p id="lobby-error" class="lobby-error"></p>
+
+      <div class="howto">
+        <h3>How it works</h3>
+        <ul>
+          <li>Both commanders spend coins on <b>troops, turrets and factories</b>.</li>
+          <li>Troops march lane by lane. Break through the enemy <b>breach line</b> to win.</li>
+          <li>You start with <b>100 coins</b>, get <b>+10 every 5s</b>, plus a shared windfall of 5–10 every 12–20s.</li>
+          <li>A <b>factory</b> (+5/5s) pays off in 55s — greedily building too early opens you to an early rush.</li>
+          <li>At <b>6:00</b> overtime starts: no new turrets, turrets lose 15% damage every 30s. At <b>10:00</b> the match is a draw.</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ GAME ============ -->
+  <div id="screen-game" class="screen hidden">
+    <header id="topbar">
+      <div class="tb-group tb-left">
+        <button id="btn-quit" class="btn btn-ghost btn-small" title="Back to menu">← Menu</button>
+        <div class="room-chip">Room <b id="room-code">····</b>
+          <button id="btn-copy" class="copy-btn" title="Copy room code">⧉</button>
+        </div>
+        <div id="side-badge" class="side-badge">—</div>
+      </div>
+
+      <div class="tb-group tb-center">
+        <div id="clock" class="clock">0:00</div>
+        <div id="phase-pill" class="phase-pill">MATCH</div>
+        <div id="turret-power" class="turret-power hidden">Turrets 100%</div>
+      </div>
+
+      <div class="tb-group tb-right">
+        <div class="player-chip you">
+          <span class="pc-label">YOU</span>
+          <span id="coins-you" class="pc-coins">0</span>
+          <span id="income-you" class="pc-income">+10/5s</span>
+        </div>
+        <div class="player-chip foe">
+          <span class="pc-label">FOE</span>
+          <span id="coins-foe" class="pc-coins">0</span>
+          <span id="income-foe" class="pc-income">+10/5s</span>
+        </div>
+      </div>
+    </header>
+
+    <main id="game-main">
+      <div id="canvas-wrap">
+        <canvas id="battlefield" width="1160" height="620"></canvas>
+
+        <div id="waiting-overlay" class="overlay">
+          <div class="overlay-card">
+            <h2>Waiting for opponent…</h2>
+            <p>Share this room code:</p>
+            <div id="waiting-code" class="big-code">····</div>
+            <button id="btn-copy-2" class="btn btn-secondary">Copy code</button>
+            <p class="hint">The match starts automatically when your opponent joins.</p>
+          </div>
+        </div>
+
+        <div id="gameover-overlay" class="overlay hidden">
+          <div class="overlay-card">
+            <h2 id="result-title">VICTORY</h2>
+            <p id="result-detail">Breach in lane 3</p>
+            <div class="overlay-actions">
+              <button id="btn-rematch" class="btn btn-primary">Rematch</button>
+              <button id="btn-back-menu" class="btn btn-secondary">Main menu</button>
+            </div>
+            <p id="rematch-status" class="hint"></p>
+          </div>
+        </div>
+
+        <div id="disconnect-banner" class="disconnect-banner hidden">Opponent disconnected — waiting for them to return…</div>
+      </div>
+
+      <aside id="sidebar">
+        <section class="panel">
+          <h3 class="panel-title">Deploy <span class="panel-hint">click a lane to send</span></h3>
+          <div id="shop" class="shop-grid"></div>
+          <p id="selection-hint" class="selection-hint">Select a unit, then click a lane. Right-click / Esc to cancel.</p>
+        </section>
+
+        <section class="panel">
+          <h3 class="panel-title">War upgrades <span class="panel-hint">apply to future spawns</span></h3>
+          <div id="unit-upgrades" class="upgrade-list"></div>
+        </section>
+
+        <section class="panel">
+          <h3 class="panel-title">Turret upgrades <span class="panel-hint">heal? never. +stats only</span></h3>
+          <div id="turret-upgrades" class="turret-upgrade-grid"></div>
+        </section>
+
+        <section class="panel feed-panel">
+          <h3 class="panel-title">Battle feed</h3>
+          <ul id="feed" class="feed"></ul>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/client.js"></script>
+</body>
+</html>
