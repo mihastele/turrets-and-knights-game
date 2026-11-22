@@ -14,7 +14,7 @@ go run ./cmd/lanesiege
 In Postman create a POST request to `http://localhost:8180/api/admin/coupons`. Select Bearer Token authorization and enter the token. Select Body, raw and JSON, then send the following.
 
 ```json
-{"label":"Supporter coupon","validDays":14,"maxUses":1}
+{"label":"Supporter coupon","validDays":30,"maxUses":10}
 ```
 
 The 201 response contains the code to send privately. `validDays` accepts 1–3650 days from creation and defaults to 30 when omitted or zero. `maxUses` zero permits unlimited redemptions. Use `GET /api/admin/coupons` to list codes and `POST /api/admin/coupons/{code}/revoke` to revoke one, with the same bearer token.

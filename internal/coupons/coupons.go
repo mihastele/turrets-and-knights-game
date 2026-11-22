@@ -50,6 +50,7 @@ type Coupon struct {
 	CreatedAt   time.Time    `json:"createdAt"`
 	ExpiresAt   time.Time    `json:"expiresAt"`
 	RevokedAt   *time.Time   `json:"revokedAt,omitempty"`
+	Uses        int          `json:"uses"`
 	MaxUses     int          `json:"maxUses"` // 0 = unlimited redemptions
 	Redemptions []Redemption `json:"redemptions"`
 }
@@ -234,7 +235,7 @@ func (s *Store) Redeem(code, playerID string) (*Coupon, error) {
 			return &cp, nil // already registered, treat as success
 		}
 	}
-	if c.MaxUses > 0 && len(c.Redemptions) >= c.MaxUses {
+	if c.MaxUses > 0 && c.Uses >= c.MaxUses {
 		return nil, ErrExhausted
 	}
 	c.Redemptions = append(c.Redemptions, Redemption{PlayerID: playerID, At: s.now()})
@@ -243,6 +244,39 @@ func (s *Store) Redeem(code, playerID string) (*Coupon, error) {
 	}
 	cp := *c
 	return &cp, nil
+}
+
+// StartUses atomically records the coupons used by a new match.
+func (s *Store) StartUses(codes []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	selected := make([]*Coupon, 0, len(codes))
+	seen := map[string]bool{}
+	for _, code := range codes {
+		key, ok := s.canon(code)
+		if !ok {
+			return ErrUnknown
+		}
+		c := s.coupons[key]
+		if err := s.checkLocked(c); err != nil {
+			return err
+		}
+		if seen[key] || (c.MaxUses > 0 && c.Uses >= c.MaxUses) {
+			return ErrExhausted
+		}
+		seen[key] = true
+		selected = append(selected, c)
+	}
+	for _, c := range selected {
+		c.Uses++
+	}
+	if err := s.saveLocked(); err != nil {
+		for _, c := range selected {
+			c.Uses--
+		}
+		return err
+	}
+	return nil
 }
 
 // Status reports the state of a code for display purposes. Never mutates.
@@ -260,6 +294,8 @@ func (s *Store) Status(code string) Status {
 		st.Reason = "revoked"
 	case !s.now().Before(c.ExpiresAt):
 		st.Reason = "expired"
+	case c.MaxUses > 0 && c.Uses >= c.MaxUses:
+		st.Reason = "exhausted"
 	default:
 		st.Valid = true
 	}

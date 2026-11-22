@@ -9,6 +9,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"lanesiege/internal/coupons"
 	"lanesiege/internal/sim"
 )
 
@@ -64,10 +65,8 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	pl.conn = conn
 	bothConnected := rm.players[0] != nil && rm.players[1] != nil &&
 		rm.players[0].conn != nil && rm.players[1].conn != nil
-	justStarted := bothConnected && rm.state == "waiting"
-	if justStarted {
-		rm.state = "playing"
-	}
+	justStarted := false
+	_ = bothConnected
 	s.mu.Unlock()
 
 	if old != nil {
@@ -157,6 +156,13 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		return
 	}
 
+	if msg.Type == "withoutCoupon" {
+		if rm.state == "waiting" {
+			pl.withoutCoupon = true
+		}
+		return
+	}
+
 	if msg.Type == "rematch" {
 		if rm.state != "finished" {
 			return
@@ -164,14 +170,11 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		rm.rematch[pl.seat] = true
 		s.broadcastLocked(rm, map[string]any{"type": "rematchStatus", "seat": pl.seat})
 		if rm.rematch[0] && rm.rematch[1] {
-			rm.game = sim.New(randomSeed(), s.balance)
-			rm.state = "playing"
-			rm.rematch = [2]bool{}
-			rm.snapEvery = 0
-			log.Printf("room %s rematch started", code)
-			s.broadcastLocked(rm, map[string]any{"type": "matchReset"})
-			s.broadcastSnapshotLocked(rm)
+			rm.state = "waiting"
+			rm.players[0].withoutCoupon = false
+			rm.players[1].withoutCoupon = false
 		}
+
 		return
 	}
 
@@ -195,6 +198,7 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		}
 		rm.game.Resign(pl.seat)
 		rm.state = "finished"
+		s.releaseCouponsLocked(rm)
 		log.Printf("room %s: side %d resigned", code, pl.seat)
 		s.broadcastSnapshotLocked(rm)
 		return
@@ -268,6 +272,9 @@ func (s *Server) tickAll() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, rm := range s.rooms {
+		if rm.state == "waiting" && rm.players[0] != nil && rm.players[1] != nil && rm.players[0].conn != nil && rm.players[1].conn != nil {
+			s.tryStartLocked(rm)
+		}
 		if rm.state != "playing" || rm.game == nil {
 			continue
 		}
@@ -275,11 +282,104 @@ func (s *Server) tickAll() {
 		rm.snapEvery++
 		if rm.game.Finished {
 			rm.state = "finished"
+			s.releaseCouponsLocked(rm)
 			log.Printf("room %s finished (winner=%d draw=%v lane=%d)", rm.code, rm.game.Winner, rm.game.Draw, rm.game.WinLane)
 		}
 		if rm.snapEvery >= sim.SnapshotEvery || rm.game.Finished {
 			rm.snapEvery = 0
 			s.broadcastSnapshotLocked(rm)
+		}
+	}
+}
+
+// tryStartLocked assigns at most one coupon to each seat under the server lock.
+func (s *Server) tryStartLocked(rm *room) {
+	busy := map[string]bool{}
+	for _, other := range s.rooms {
+		if other.state == "playing" {
+			for _, p := range other.players {
+				if p != nil && p.activeCoupon != "" {
+					busy[p.activeCoupon] = true
+				}
+			}
+		}
+	}
+	candidates := [2][]string{}
+	all := s.coupons.List()
+	for seat, p := range rm.players {
+		if p.withoutCoupon {
+			continue
+		}
+		for _, c := range all {
+			for _, code := range p.coupons {
+				if coupons.Normalize(c.Code) == coupons.Normalize(code) && !busy[coupons.Normalize(c.Code)] && s.coupons.Status(code).Valid {
+					candidates[seat] = append(candidates[seat], coupons.Normalize(c.Code))
+				}
+			}
+		}
+	}
+	chosen := [2]string{}
+	// Choose a pair that gives both seats access whenever possible.
+	for _, a := range candidates[0] {
+		for _, b := range candidates[1] {
+			if a != b {
+				chosen = [2]string{a, b}
+				break
+			}
+		}
+		if chosen[1] != "" {
+			break
+		}
+	}
+	if chosen[0] == "" && len(candidates[0]) > 0 {
+		chosen[0] = candidates[0][0]
+	}
+	if chosen[1] == "" && len(candidates[1]) > 0 && candidates[1][0] != chosen[0] {
+		chosen[1] = candidates[1][0]
+	}
+	blocked := false
+	for i, p := range rm.players {
+		if !p.withoutCoupon && len(p.coupons) > 0 && chosen[i] == "" {
+			s.sendToLocked(p.conn, map[string]any{"type": "couponWait", "message": "Coupon is in use or has reached its usage limit."})
+			blocked = true
+		}
+	}
+	if blocked {
+		return
+	}
+	codes := []string{}
+	for _, code := range chosen {
+		if code != "" {
+			codes = append(codes, code)
+		}
+	}
+	if err := s.coupons.StartUses(codes); err != nil {
+		s.broadcastLocked(rm, map[string]any{"type": "couponWait", "message": "Could not start with coupon. Please wait or play without it."})
+		return
+	}
+	rematch := rm.rematch[0] && rm.rematch[1]
+	if rematch {
+		rm.game = sim.New(randomSeed(), s.balance)
+		rm.snapEvery = 0
+		rm.rematch = [2]bool{}
+	}
+	for i, p := range rm.players {
+		p.activeCoupon = chosen[i]
+		s.sendToLocked(p.conn, map[string]any{"type": "couponUpdate", "coupon": s.couponHello(p)})
+	}
+	rm.state = "playing"
+	if rematch {
+		s.broadcastLocked(rm, map[string]any{"type": "matchReset"})
+	} else {
+		s.broadcastLocked(rm, map[string]any{"type": "matchStart"})
+	}
+	s.broadcastSnapshotLocked(rm)
+}
+
+func (s *Server) releaseCouponsLocked(rm *room) {
+	for _, p := range rm.players {
+		if p != nil {
+			p.activeCoupon = ""
 		}
 	}
 }

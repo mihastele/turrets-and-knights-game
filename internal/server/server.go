@@ -33,11 +33,13 @@ import (
 // ---------------------------------------------------------------------------
 
 type player struct {
-	token    string
-	seat     int
-	conn     *wsConn
-	playerID string   // client-generated id from localStorage, used for coupon redemption records
-	coupons  []string // coupon codes this player holds (validated server-side, rechecked live)
+	token         string
+	seat          int
+	conn          *wsConn
+	activeCoupon  string
+	withoutCoupon bool
+	playerID      string   // client-generated id from localStorage, used for coupon redemption records
+	coupons       []string // coupon codes this player holds (validated server-side, rechecked live)
 }
 
 type wsConn struct {
@@ -104,6 +106,7 @@ func NewWithOptions(webFS fs.FS, opts Options) *Server {
 	mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/join", s.handleJoinRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/rejoin", s.handleRejoin)
+	mux.HandleFunc("POST /api/rooms/{code}/leave", s.handleLeave)
 	mux.HandleFunc("POST /api/coupons/redeem", s.handleRedeemCoupon)
 	mux.HandleFunc("POST /api/coupons/status", s.handleCouponStatus)
 	mux.HandleFunc("POST /api/admin/coupons", s.handleAdminCreateCoupon)
@@ -334,6 +337,38 @@ func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 				"side":     map[int]string{0: "A", 1: "B"}[p.seat],
 				"entitled": s.playerEntitled(p),
 			})
+			return
+		}
+	}
+	writeErr(w, http.StatusForbidden, "bad token")
+}
+
+func (s *Server) handleLeave(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Token string `json:"token"`
+	}
+	if !readJSONBody(w, r, &body) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rm := s.rooms[strings.ToUpper(strings.TrimSpace(r.PathValue("code")))]
+	if rm == nil {
+		writeErr(w, http.StatusNotFound, "room not found")
+		return
+	}
+	for _, p := range rm.players {
+		if p != nil && p.token == body.Token {
+			if rm.state == "playing" {
+				rm.game.Resign(p.seat)
+				rm.state = "finished"
+				s.releaseCouponsLocked(rm)
+				s.broadcastSnapshotLocked(rm)
+			}
+			if rm.state == "waiting" {
+				delete(s.rooms, rm.code)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 			return
 		}
 	}

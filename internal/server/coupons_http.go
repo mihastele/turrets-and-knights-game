@@ -75,7 +75,7 @@ type couponRedemptionView struct {
 func couponToView(c coupons.Coupon, withRedemptions bool) couponView {
 	v := couponView{
 		Code: c.Code, Label: c.Label, CreatedAt: c.CreatedAt, ExpiresAt: c.ExpiresAt,
-		Revoked: c.RevokedAt != nil, MaxUses: c.MaxUses, Uses: len(c.Redemptions),
+		Revoked: c.RevokedAt != nil, MaxUses: c.MaxUses, Uses: c.Uses,
 	}
 	if withRedemptions {
 		v.Redemptions = make([]couponRedemptionView, 0, len(c.Redemptions))
@@ -115,7 +115,7 @@ func (s *Server) handleAdminCreateCoupon(w http.ResponseWriter, r *http.Request)
 	var body struct {
 		Label     string `json:"label"`
 		ValidDays int    `json:"validDays"`
-		MaxUses   int    `json:"maxUses"`
+		MaxUses   *int   `json:"maxUses"`
 	}
 	if !readJSONBody(w, r, &body) {
 		return
@@ -128,12 +128,16 @@ func (s *Server) handleAdminCreateCoupon(w http.ResponseWriter, r *http.Request)
 		writeErr(w, http.StatusBadRequest, "validDays must be between 0 (default 30) and 3650")
 		return
 	}
-	if body.MaxUses < 0 {
+	if body.MaxUses != nil && *body.MaxUses < 0 {
 		writeErr(w, http.StatusBadRequest, "maxUses must be >= 0 (0 = unlimited)")
 		return
 	}
 	validFor := time.Duration(body.ValidDays) * 24 * time.Hour // 0 → library default (30d)
-	c, err := s.coupons.Create(strings.TrimSpace(body.Label), validFor, body.MaxUses)
+	maxUses := 10
+	if body.MaxUses != nil {
+		maxUses = *body.MaxUses
+	}
+	c, err := s.coupons.Create(strings.TrimSpace(body.Label), validFor, maxUses)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
@@ -271,7 +275,7 @@ func (s *Server) entitledCoupons(codes []string) []string {
 // playerEntitled reports whether any code the player holds is currently valid.
 // Checked live (not cached) so revocation/expiry applies mid-session.
 func (s *Server) playerEntitled(p *player) bool {
-	return p != nil && len(p.coupons) > 0 && s.coupons.AnyValid(p.coupons)
+	return p != nil && p.activeCoupon != "" && s.coupons.AnyValid([]string{p.activeCoupon})
 }
 
 // couponHello builds the coupon block of the hello message so the client can
@@ -280,7 +284,7 @@ func (s *Server) couponHello(p *player) map[string]any {
 	if p == nil {
 		return map[string]any{"entitled": false}
 	}
-	best, ok := s.coupons.BestValid(p.coupons)
+	best, ok := s.coupons.BestValid([]string{p.activeCoupon})
 	if !ok {
 		return map[string]any{"entitled": false}
 	}

@@ -538,7 +538,16 @@ function handleServerMessage(msg) {
       buildUpgradePanels();
       applyCouponFromHello(msg.coupon || null);
       break;
+    case 'couponUpdate':
+      applyCouponFromHello(msg.coupon);
+      break;
+    case 'couponWait':
+      els.waiting.classList.remove('hidden');
+      $('coupon-wait-message').textContent = msg.message;
+      $('btn-without-coupon').classList.remove('hidden');
+      break;
     case 'matchStart':
+      $('btn-without-coupon').classList.add('hidden');
       els.waiting.classList.add('hidden');
       els.shopToggle.classList.remove('hidden');
       SFX.setMusicHot(false);
@@ -1981,7 +1990,7 @@ async function onJoin(ev) {
 }
 
 async function tryResume() {
-  tryResumeCouponStatus(); // refresh the lobby coupon badge either way
+  refreshCouponStatus();
   const saved = SS.load();
   if (!saved) return;
   try {
@@ -1992,7 +2001,13 @@ async function tryResume() {
   }
 }
 
-function backToMenu() {
+async function backToMenu() {
+  if (!state.over && state.screen === 'game' && els.waiting.classList.contains('hidden')) {
+    if (!confirm('Leave and forfeit this match?')) return;
+  }
+  if (state.code && sessionToken) {
+    try { await api(`/api/rooms/${encodeURIComponent(state.code)}/leave`, { token: sessionToken }); } catch (e) { showToast(e.message, false); return; }
+  }
   SS.clear();
   SFX.stopMusic();
   if (state.ws) { try { state.ws.close(); } catch {} }
@@ -2032,6 +2047,7 @@ function laneFromEvent(ev) {
 $('btn-create').addEventListener('click', onCreate);
 $('join-form').addEventListener('submit', onJoin);
 $('btn-quit').addEventListener('click', backToMenu);
+$('btn-without-coupon').addEventListener('click', () => { send({ type: 'withoutCoupon' }); $('btn-without-coupon').classList.add('hidden'); });
 $('btn-back-menu').addEventListener('click', backToMenu);
 $('btn-rematch').addEventListener('click', () => {
   if (state.rematchPending) return;
