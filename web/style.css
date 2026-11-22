@@ -67,6 +67,7 @@ html, body {
 .join-row { display: flex; gap: 10px; width: 100%; }
 .code-input {
   flex: 1;
+  min-width: 0;
   background: var(--panel-2);
   border: 1px solid var(--line);
   border-radius: 10px;
