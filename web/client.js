@@ -2066,21 +2066,35 @@ async function backToMenu() {
 // Input wiring
 // ---------------------------------------------------------------------------
 const fullscreenBtn = $('btn-fullscreen');
+const isIPhone = /iPhone|iPod/.test(navigator.userAgent);
+const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const showFullscreenHelp = () => { $('fullscreen-help').classList.remove('hidden'); $('fullscreen-help-close').focus(); };
 function updateFullscreenButton() {
   const active = !!document.fullscreenElement;
-  const label = active ? 'Exit fullscreen' : 'Enter fullscreen';
-  fullscreenBtn.classList.toggle('hidden', !active && (!document.fullscreenEnabled || !document.documentElement.requestFullscreen));
+  const available = !!(document.fullscreenEnabled && document.documentElement.requestFullscreen);
+  const help = !available && isIPhone && !isStandalone();
+  const label = help ? 'Fullscreen instructions' : active ? 'Exit fullscreen' : 'Enter fullscreen';
+  fullscreenBtn.classList.toggle('hidden', !active && !available && !help);
   fullscreenBtn.setAttribute('aria-label', label);
   fullscreenBtn.title = label;
   fullscreenBtn.setAttribute('aria-pressed', String(active));
 }
 fullscreenBtn.addEventListener('click', async () => {
+  if (!document.fullscreenEnabled || !document.documentElement.requestFullscreen) {
+    if (isIPhone && !isStandalone()) showFullscreenHelp();
+    return;
+  }
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
     else await document.documentElement.requestFullscreen();
   } catch {
-    showToast('Fullscreen is unavailable', false);
+    if (isIPhone && !isStandalone()) showFullscreenHelp();
+    else showToast('Fullscreen is unavailable', false);
   }
+});
+$('fullscreen-help-close').addEventListener('click', () => {
+  $('fullscreen-help').classList.add('hidden');
+  fullscreenBtn.focus();
 });
 document.addEventListener('fullscreenchange', updateFullscreenButton);
 updateFullscreenButton();

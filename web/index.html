@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Lane Siege">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚔️</text></svg>">
   <title>Lane Siege</title>
   <link rel="stylesheet" href="/style.css">
@@ -191,6 +194,14 @@
       <h2>Rotate your device</h2>
       <p>Lane Siege is best played in <b>landscape</b>.</p>
       <button id="rotate-dismiss" class="btn btn-secondary btn-small">Continue anyway</button>
+    </div>
+  </div>
+
+  <div id="fullscreen-help" class="fullscreen-help hidden" role="dialog" aria-modal="true" aria-labelledby="fullscreen-help-title">
+    <div class="fullscreen-help-card">
+      <h2 id="fullscreen-help-title">Play fullscreen on iPhone</h2>
+      <p>In Safari, tap Share, then Add to Home Screen. Open Lane Siege from your Home Screen to play without browser controls.</p>
+      <button id="fullscreen-help-close" class="btn btn-primary" type="button">Got it</button>
     </div>
   </div>
 
