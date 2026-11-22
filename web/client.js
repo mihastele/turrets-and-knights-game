@@ -398,7 +398,11 @@ function applyCouponFromHello(coupon) {
   state.coupon = coupon && coupon.entitled ? coupon : null;
   const on = !!state.coupon;
   els.couponBadge.classList.toggle('hidden', !on);
-  els.couponPanel.classList.toggle('hidden', !on);
+  addDragonShopItem();
+  addDragonUpgradeRow();
+  els.couponPanel.classList.toggle('locked', !on);
+  els.couponExpiry.textContent = on ? '' : '🔒 Requires an active coupon · see the coupon guide in the lobby';
+  els.couponPanel.querySelectorAll('.ability-btn').forEach(btn => { btn.disabled = !on; btn.title = on ? '' : 'Requires an active coupon'; });
   if (!on) return;
   const label = state.coupon.label || 'Coupon holder';
   const until = state.coupon.expiresAt ? `valid until ${fmtExpiry(state.coupon.expiresAt)}` : '';
@@ -425,7 +429,7 @@ function addDragonShopItem() {
   btn.innerHTML =
     '<span class="si-key">8</span>' +
     '<div class="si-top"><span class="si-name">🐉 ' + u.name + '</span><span class="si-cost">' + u.cost + 'c</span></div>' +
-    '<div class="si-role">' + u.role + ' <em>[coupon]</em></div>';
+    '<div class="si-role">' + u.role + ' <em>🔒 Coupon</em></div>';
   btn.addEventListener('click', () => { SFX.click(); selectUnit('dragon'); });
   els.shop.insertBefore(btn, els.shop.firstChild);
 }
@@ -569,7 +573,7 @@ function handleServerMessage(msg) {
     case 'error':
       SFX.error();
       showToast(msg.message || 'Action rejected', false);
-      if (/coupon/i.test(msg.message || '')) refreshCouponStatus();
+      if (/coupon/i.test(msg.message || '')) { applyCouponFromHello(null); clearSelection(); refreshCouponStatus(); }
       break;
   }
 }
@@ -870,7 +874,8 @@ function buildUpgradePanels() {
 
 function refreshAffordability(coins) {
   els.shop.querySelectorAll('.shop-item').forEach((btn) => {
-    if (state.over) { btn.disabled = true; return; }
+    if (state.over || (btn.dataset.unit === 'dragon' && !state.coupon)) { btn.disabled = true; btn.title = '🔒 Requires an active coupon'; return; }
+    btn.title = '';
     const cost = Number(btn.dataset.cost || '0');
     btn.classList.toggle('cant-afford', coins < cost);
     btn.disabled = coins < cost;
@@ -886,6 +891,7 @@ function updateUpgradeButtons(snap) {
     const level = (you.unitUpgrades && you.unitUpgrades[type]) || 0;
     row.querySelectorAll('.pip').forEach((pip, i) => pip.classList.toggle('on', i < level));
     const btn = row.querySelector('.upgrade-btn');
+    if (type === 'dragon' && !state.coupon) { btn.textContent = '🔒 Coupon'; btn.disabled = true; return; }
     if (level >= 2) {
       btn.textContent = 'MAX';
       btn.disabled = true;

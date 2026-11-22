@@ -178,6 +178,9 @@ After=network.target
 Type=simple
 User=${APP_USER}
 Group=${APP_USER}
+EnvironmentFile=-/etc/lanesiege.env
+Environment=LANESIEGE_COUPONS_FILE=/var/lib/lanesiege/coupons.json
+ReadWritePaths=/var/lib/lanesiege
 ExecStart=${BIN_PATH} -addr ${BIND_ADDR}:${PORT}
 Restart=always
 RestartSec=2
@@ -238,6 +241,11 @@ main() {
   install_go
   build_and_install
   create_service_user
+
+  $SUDO install -d -m 0750 -o "$APP_USER" -g "$APP_USER" /var/lib/lanesiege
+  if [ -f "$REPO_ROOT/.env" ]; then
+    $SUDO install -m 0600 "$REPO_ROOT/.env" /etc/lanesiege.env
+  fi
 
   if [ "$USE_SYSTEMD" -eq 1 ]; then write_systemd_unit; else start_nohup; fi
   wait_for_health

@@ -5,3 +5,7 @@ node_modules
 .dockerignore
 Dockerfile
 shot-*.png
+
+.env
+coupons.json
+coupons.json.tmp

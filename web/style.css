@@ -612,3 +612,7 @@ html, body {
 /* Coupon feed lines */
 .feed li.rockslide { color: #fdba74; border-color: #f97316; font-weight: 700; }
 .feed li.dragonfire { color: #fda4af; border-color: #ef4444; font-weight: 700; }
+
+.coffee-badge { display:inline-block; padding:10px 16px; margin:4px 8px 10px 0; border-radius:8px; background:#ffdd00; color:#161616; font-weight:800; text-decoration:none; }
+.coupon-panel.locked .ability-btn { opacity:.65; }
+.coupon-panel.locked .ab-name::before { content:"🔒 "; }

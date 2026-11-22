@@ -1,5 +1,24 @@
 # Lane Siege
 
+## Supporter coupons
+
+Supporters can contribute at https://buymeacoffee.com/mihastele. Send each supporter a coupon privately after confirming support. The game serves a guide at `/docs/`.
+
+Copy `.env.example` to `.env` and set `LANESIEGE_ADMIN_TOKEN`. For local use, export this variable before starting the server.
+
+```powershell
+$env:LANESIEGE_ADMIN_TOKEN = "your-secret"
+go run ./cmd/lanesiege
+```
+
+In Postman create a POST request to `http://localhost:8180/api/admin/coupons`. Select Bearer Token authorization and enter the token. Select Body, raw and JSON, then send the following.
+
+```json
+{"label":"Supporter coupon","validDays":14,"maxUses":1}
+```
+
+The 201 response contains the code to send privately. `validDays` accepts 1–3650 days from creation and defaults to 30 when omitted or zero. `maxUses` zero permits unlimited redemptions. Use `GET /api/admin/coupons` to list codes and `POST /api/admin/coupons/{code}/revoke` to revoke one, with the same bearer token.
+
 A head-to-head lane siege for two players. Plants vs. Zombies meets a
 headline-fight: five lanes, two commanders, one breach. Build an economy,
 massed troops, or turtling turrets — whoever gets a living unit across the

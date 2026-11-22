@@ -1,3 +1,7 @@
 lanesiege.exe
 /dist/
 *.log
+
+.env
+coupons.json
+coupons.json.tmp

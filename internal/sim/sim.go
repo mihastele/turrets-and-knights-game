@@ -384,6 +384,9 @@ func (s *Sim) ApplyAction(a Action) error {
 		if !ok {
 			return ErrUnknownUnit
 		}
+		if ub.CouponOnly && !a.Entitled {
+			return ErrCouponRequired
+		}
 		level := p.UnitUpgrades[a.Unit]
 		if level >= 2 {
 			return ErrMaxLevel
