@@ -18,19 +18,21 @@ type Snapshot struct {
 	Units         []UnitSnapshot    `json:"units"`
 	Turrets       []TurretSnapshot  `json:"turrets"`
 	Caches        []CacheSnapshot   `json:"caches"`
+	Burns         []BurnSnapshot    `json:"burns"`
 	Events        []Event           `json:"events"`
 	Fx            []FxEvent         `json:"fx"`
 }
 
 type PlayerSnapshot struct {
-	Coins        int              `json:"coins"`
-	Income       int              `json:"income"` // per economy interval, factory included
-	Factory      bool             `json:"factory"`
-	UnitUpgrades map[UnitType]int `json:"unitUpgrades"`
-	DamageDealt  int              `json:"damageDealt"`
-	Kills        int              `json:"kills"`
-	UnitsLost    int              `json:"unitsLost"`
-	TurretsDown  int              `json:"turretsDown"`
+	Coins        int                `json:"coins"`
+	Income       int                `json:"income"` // per economy interval, factory included
+	Factory      bool               `json:"factory"`
+	UnitUpgrades map[UnitType]int   `json:"unitUpgrades"`
+	DamageDealt  int                `json:"damageDealt"`
+	Kills        int                `json:"kills"`
+	UnitsLost    int                `json:"unitsLost"`
+	TurretsDown  int                `json:"turretsDown"`
+	Abilities    map[string]float64 `json:"abilities"` // coupon field-effect id -> seconds until ready (0 = ready)
 }
 
 // CacheSnapshot describes a supply cache currently on the field.
@@ -39,6 +41,13 @@ type CacheSnapshot struct {
 	X         float64 `json:"x"`
 	Amount    int     `json:"amount"`
 	ExpiresIn float64 `json:"expiresIn"` // seconds until it vanishes
+}
+
+// BurnSnapshot describes an active Dragon Fire field — a lane left ablaze.
+type BurnSnapshot struct {
+	Lane      int     `json:"lane"`
+	Side      int     `json:"side"`      // who cast it
+	Remaining float64 `json:"remaining"` // seconds left
 }
 
 type UnitSnapshot struct {
@@ -91,11 +100,20 @@ func (s *Sim) Snapshot() Snapshot {
 			Kills:        p.Kills,
 			UnitsLost:    p.UnitsLost,
 			TurretsDown:  p.TurretsDown,
+			Abilities:    abilityCooldowns(s.abilityReady[i], s.Time),
 		}
 	}
 	snap.Units = make([]UnitSnapshot, 0, len(s.units))
 	snap.Turrets = make([]TurretSnapshot, 0, 2*NumLanes*TurretSlots)
 	snap.Caches = make([]CacheSnapshot, 0, len(s.caches))
+	snap.Burns = make([]BurnSnapshot, 0, len(s.burns))
+	for _, b := range s.burns {
+		snap.Burns = append(snap.Burns, BurnSnapshot{
+			Lane:      b.Lane,
+			Side:      b.Side,
+			Remaining: b.Until - s.Time,
+		})
+	}
 	for _, c := range s.caches {
 		snap.Caches = append(snap.Caches, CacheSnapshot{
 			Lane:      c.Lane,
@@ -130,6 +148,20 @@ func emptyIfNil[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+// abilityCooldowns converts absolute ready-times into seconds remaining.
+// Only effects that have been cast at least once appear; absent means ready.
+func abilityCooldowns(readyAt map[string]float64, now float64) map[string]float64 {
+	out := make(map[string]float64, len(readyAt))
+	for id, t := range readyAt {
+		rem := t - now
+		if rem < 0 {
+			rem = 0
+		}
+		out[id] = rem
+	}
+	return out
 }
 
 func copyUpgrades(in map[UnitType]int) map[UnitType]int {

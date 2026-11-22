@@ -20,11 +20,12 @@ var upgrader = websocket.Upgrader{
 
 // clientMsg is the envelope for everything a client may send.
 type clientMsg struct {
-	Type  string `json:"type"`
-	Lane  int    `json:"lane"`
-	Unit  string `json:"unit"`
-	Emote string `json:"emote"`
-	Slot  *int   `json:"slot"` // turret slot for upgradeTurret (omitted = lowest built slot); ignored for turret builds (auto)
+	Type   string `json:"type"`
+	Lane   int    `json:"lane"`
+	Unit   string `json:"unit"`
+	Emote  string `json:"emote"`
+	Effect string `json:"effect"` // coupon field effect id for "fieldEffect"
+	Slot   *int   `json:"slot"`   // turret slot for upgradeTurret (omitted = lowest built slot); ignored for turret builds (auto)
 }
 
 const writeWait = 5 * time.Second
@@ -92,6 +93,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		"seat":    pl.seat,
 		"code":    code,
 		"balance": s.balance,
+		"coupon":  s.couponHello(pl),
 	})
 	if justStarted {
 		log.Printf("room %s match started", code)
@@ -205,7 +207,8 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 
 	var action sim.Action
 	action.Side = pl.seat
-	action.Slot = -1 // default: lowest built slot (upgrade) / auto (build)
+	action.Slot = -1                       // default: lowest built slot (upgrade) / auto (build)
+	action.Entitled = s.playerEntitled(pl) // checked here (not at hello time) so expiry/revocation applies immediately
 	if msg.Slot != nil {
 		action.Slot = *msg.Slot
 	}
@@ -225,6 +228,10 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 	case "upgradeTurret":
 		action.Kind = sim.ActionUpgradeTurret
 		action.Lane = msg.Lane
+	case "fieldEffect":
+		action.Kind = sim.ActionFieldEffect
+		action.Lane = msg.Lane
+		action.Effect = strings.ToLower(strings.TrimSpace(msg.Effect))
 	default:
 		s.sendToLocked(conn, map[string]any{"type": "error", "message": "unknown action"})
 		return

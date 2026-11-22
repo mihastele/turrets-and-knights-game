@@ -17,10 +17,13 @@ const (
 	Knight  UnitType = "knight"
 	Ram     UnitType = "ram"
 	Siege   UnitType = "siege"
+	Dragon  UnitType = "dragon"
 )
 
 // UnitTypes lists every unit in stable order (handy for UI and tests).
-var UnitTypes = []UnitType{Soldier, Bowman, Knight, Ram, Siege}
+// Dragon is coupon-locked and appended last so indices of the stock units
+// never shift.
+var UnitTypes = []UnitType{Soldier, Bowman, Knight, Ram, Siege, Dragon}
 
 const (
 	// NumLanes is the number of lanes on the field.
@@ -56,6 +59,13 @@ type UnitBalance struct {
 	UpgradeHP      float64 `json:"upgradeHp"`      // fractional max-HP gain per level
 	UpgradeDamage  float64 `json:"upgradeDamage"`  // fractional damage gain per level
 	VsTurretDamage float64 `json:"vsTurretDamage"` // damage vs turrets per hit; 0 = cannot target turrets
+	// Splash > 0 makes attacks hit every enemy unit within this radius of the
+	// primary target (same lane). 0 = single target.
+	Splash float64 `json:"splash,omitempty"`
+	// Flying units cannot be targeted or damaged by turrets.
+	Flying bool `json:"flying,omitempty"`
+	// CouponOnly units are only deployable by players holding a valid coupon.
+	CouponOnly bool `json:"couponOnly,omitempty"`
 }
 
 // TurretBalance holds every tunable number for turrets.
@@ -103,6 +113,24 @@ type OvertimeBalance struct {
 	DrawAt   float64 `json:"drawAt"`   // seconds; hard time limit, match is a draw
 }
 
+// FieldEffectBalance configures a coupon-only, lane-targeted field effect.
+type FieldEffectBalance struct {
+	ID           string  `json:"id"`
+	Name         string  `json:"name"`
+	Role         string  `json:"role"`
+	Cost         int     `json:"cost"`
+	Cooldown     float64 `json:"cooldown"`     // seconds between casts per player
+	Damage       float64 `json:"damage"`       // rockslide: total per unit; dragonfire: per burn tick
+	Duration     float64 `json:"duration"`     // dragonfire: seconds the lane stays ablaze
+	TickInterval float64 `json:"tickInterval"` // dragonfire: seconds between burn ticks
+}
+
+// CouponBalance holds the coupon-exclusive unlocks tuned here.
+type CouponBalance struct {
+	Rockslide  FieldEffectBalance `json:"rockslide"`
+	DragonFire FieldEffectBalance `json:"dragonFire"`
+}
+
 // Balance is the single server-side source of truth for tuning.
 type Balance struct {
 	StartCoins int                      `json:"startCoins"`
@@ -112,6 +140,7 @@ type Balance struct {
 	Economy    EconomyBalance           `json:"economy"`
 	Overtime   OvertimeBalance          `json:"overtime"`
 	Cache      CacheBalance             `json:"cache"`
+	Coupon     CouponBalance            `json:"coupon"`
 }
 
 // DefaultBalance returns the launch tuning. Tune the game here; everything
@@ -126,6 +155,13 @@ type Balance struct {
 // Targeting is split troops vs structures: Soldier, Bowman and Knight attack
 // enemy units only; Ram and Siege attack turrets only and cannot damage
 // enemy units.
+//
+// Coupon unlocks (require an admin-issued coupon held by the player): the
+// Dragon (flying, splash fire breath, cannot be targeted by turrets, cannot
+// damage turrets) and two lane-targeted field effects — Rockslide (instant
+// heavy damage to ground units in a lane) and Dragon Fire (a burning lane
+// that damages everything inside over time). The server decides entitlement
+// and sets Action.Entitled; the sim enforces it on deploy/cast.
 //
 // Reference matchups (roughly equal coin investments):
 //   - 1 Knight (45) vs 2 Soldiers (40): soldiers win the straight fight,
@@ -146,6 +182,7 @@ func DefaultBalance() Balance {
 			Knight:  {Name: "Knight", Role: "Fast attacker. Punishes open lanes and lone bowmen.", Cost: 45, MaxHP: 95, Damage: 15, Range: 2.4, AttackInterval: 0.9, Speed: 8.5, UpgradeCosts: [2]int{25, 45}, UpgradeHP: 0.15, UpgradeDamage: 0.15},
 			Ram:     {Name: "Ram", Role: "Building breaker. Smashes turrets, cannot attack troops. Needs an escort.", Cost: 55, MaxHP: 170, Damage: 4, Range: 2.6, AttackInterval: 1.2, Speed: 3.1, UpgradeCosts: [2]int{30, 50}, UpgradeHP: 0.20, UpgradeDamage: 0.15, VsTurretDamage: 38},
 			Siege:   {Name: "Siege Engine", Role: "Long-range pressure. Outranges turrets; targets structures only. Cannot fire close up.", Cost: 75, MaxHP: 85, Damage: 30, Range: 30, MinRange: 14, AttackInterval: 2.4, Speed: 2.3, UpgradeCosts: [2]int{40, 70}, UpgradeHP: 0.15, UpgradeDamage: 0.15, VsTurretDamage: 30},
+			Dragon:  {Name: "Dragon", Role: "Coupon unlock. Flying fire-breather: splash damage, turrets can't hit it.", Cost: 140, MaxHP: 240, Damage: 26, Range: 4.5, AttackInterval: 1.3, Speed: 5.6, UpgradeCosts: [2]int{60, 100}, UpgradeHP: 0.20, UpgradeDamage: 0.20, Splash: 1.6, Flying: true, CouponOnly: true},
 		},
 		Turret: TurretBalance{
 			Name: "Turret", Cost: 70, MaxHP: 130, Damage: 14, Range: 13, AttackInterval: 1.1,
@@ -167,6 +204,24 @@ func DefaultBalance() Balance {
 			Lifetime: 25,
 			X:        FieldLength / 2, // center of the field
 			Radius:   3.5,
+		},
+		Coupon: CouponBalance{
+			Rockslide: FieldEffectBalance{
+				ID: "rockslide", Name: "Rockslide",
+				Role:     "Coupon unlock. A rockfall crushes every ground enemy in the lane.",
+				Cost:     50,
+				Cooldown: 22,
+				Damage:   60,
+			},
+			DragonFire: FieldEffectBalance{
+				ID: "dragonfire", Name: "Dragon Fire",
+				Role:         "Coupon unlock. Sets the lane ablaze — burning ground sears everything inside.",
+				Cost:         80,
+				Cooldown:     35,
+				Damage:       7,
+				Duration:     6,
+				TickInterval: 0.5,
+			},
 		},
 	}
 }

@@ -10,7 +10,10 @@ const FIELD = { x0: 52, x1: 1108, y0: 14, lanes: 5, laneH: 116 };
 const W = 1160, H = 620;
 const SCALE = 2;
 const UNIT_TYPES = ['soldier', 'bowman', 'knight', 'ram', 'siege'];
+const DRAGON_TYPE = 'dragon';
+const ABILITY_EFFECTS = ['rockslide', 'dragonfire'];
 const HOTKEYS = { '1': 'soldier', '2': 'bowman', '3': 'knight', '4': 'ram', '5': 'siege', '6': 'turret', '7': 'factory' };
+const COUPON_HOTKEYS = { '8': 'dragon', '9': 'rockslide', '0': 'dragonfire' };
 const LANE_H = FIELD.laneH;
 
 const cv = document.getElementById('battlefield');
@@ -186,6 +189,9 @@ const SFX = (() => {
     },
     poof()   { tone({ type: 'sine', f: 430, f1: 120, t: 0.16, vol: 0.2 }); noise({ t: 0.08, vol: 0.1, cutoff: 900 }); },
     boom()   { noise({ t: 0.45, vol: 0.4, cutoff: 700 }); tone({ type: 'sine', f: 82, f1: 34, t: 0.5, vol: 0.5 }); },
+    rockfall() { noise({ t: 0.7, vol: 0.5, cutoff: 380 }); tone({ type: 'sine', f: 58, f1: 29, t: 0.7, vol: 0.5 }); noise({ t: 0.3, vol: 0.3, cutoff: 250, delay: 0.12 }); },
+    inferno()  { tone({ type: 'sawtooth', f: 160, f1: 430, t: 0.55, vol: 0.28 }); noise({ t: 0.7, vol: 0.35, cutoff: 950 }); },
+    fire()     { noise({ t: 0.13, vol: 0.13, cutoff: 1500 }); tone({ type: 'sawtooth', f: 340, f1: 190, t: 0.12, vol: 0.1 }); },
     cacheDrop() { tone({ type: 'sine', f: 90, f1: 46, t: 0.35, vol: 0.4 }); tone({ type: 'triangle', f: 1320, t: 0.08, vol: 0.15, delay: 0.18 }); },
     streakHorn() { tone({ type: 'sawtooth', f: 294, t: 0.14, vol: 0.3 }); tone({ type: 'sawtooth', f: 392, t: 0.22, vol: 0.3, delay: 0.12 }); },
     windfall() { [659, 784, 988].forEach((f, i) => tone({ type: 'triangle', f, t: 0.09, vol: 0.22, delay: i * 0.07 })); },
@@ -205,6 +211,7 @@ const state = {
   seat: null,
   code: null,
   balance: null,
+  coupon: null, // { entitled, code, label, expiresAt } from the server hello/status
   snapNow: null,
   snapPrev: null,
   snapNowAt: 0,
@@ -267,6 +274,14 @@ const els = {
   rotateDismiss: $('rotate-dismiss'),
   emoteBar: $('emote-bar'),
   matchStats: $('match-stats'),
+  couponBadge: $('coupon-badge'),
+  couponPanel: $('coupon-panel'),
+  couponExpiry: $('coupon-expiry'),
+  couponForm: $('coupon-form'),
+  couponCode: $('coupon-code'),
+  couponStatus: $('coupon-status'),
+  abilityRockslide: $('ability-rockslide'),
+  abilityDragonfire: $('ability-dragonfire'),
 };
 
 // ---------------------------------------------------------------------------
@@ -282,6 +297,187 @@ const SS = {
   clear() { try { sessionStorage.removeItem('laneSiege'); } catch {} },
 };
 let sessionToken = null;
+
+//-------------------------------------------------------------------------------
+// Coupons (Dragon unlocks). The player id is a stable random id in
+// localStorage; redeemed codes are kept there too and sent up with every
+// create/join/rejoin so the server can re-validate them (they may expire or
+// be revoked at any time).
+//-------------------------------------------------------------------------------
+const PID_KEY = 'laneSiegePlayerId';
+const COUPON_KEY = 'laneSiegeCoupons';
+
+function playerId() {
+  try {
+    let id = localStorage.getItem(PID_KEY);
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : 'p-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10));
+      localStorage.setItem(PID_KEY, id);
+    }
+    return id;
+  } catch {
+    return 'anon';
+  }
+}
+
+const CouponStore = {
+  load() {
+    try { const v = JSON.parse(localStorage.getItem(COUPON_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; }
+  },
+  add(code) {
+    const list = this.load();
+    if (!list.includes(code)) {
+      list.push(code);
+      try { localStorage.setItem(COUPON_KEY, JSON.stringify(list)); } catch {}
+    }
+  },
+  clear() { try { localStorage.removeItem(COUPON_KEY); } catch {} },
+};
+
+function couponPayload() {
+  return { playerId: playerId(), coupons: CouponStore.load() };
+}
+
+// ---------------------------------------------------------------------------
+// Lobby: coupon redemption
+// ---------------------------------------------------------------------------
+function fmtExpiry(iso) {
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+async function refreshCouponStatus() {
+  const codes = CouponStore.load();
+  if (!codes.length) {
+    if (els.couponStatus) els.couponStatus.textContent = '';
+    return;
+  }
+  try {
+    const res = await api('/api/coupons/status', { codes });
+    if (res.entitled && res.active) {
+      els.couponStatus.textContent = `🐉 ${res.active.label || 'Coupon'} unlocked — Dragon + field effects · until ${fmtExpiry(res.active.expiresAt)}`;
+      els.couponStatus.className = 'coupon-status ok';
+    } else {
+      // Prune dead codes so a fresh redeem isn't blocked by stale entries.
+      const dead = (res.coupons || []).filter(c => !c.valid).map(c => c.code);
+      if (dead.length === codes.length) CouponStore.clear();
+      const first = (res.coupons || [])[0];
+      const why = first && first.reason ? first.reason : 'unknown';
+      els.couponStatus.textContent = `Coupon not active (${why}). Ask your admin for a new one.`;
+      els.couponStatus.className = 'coupon-status err';
+    }
+  } catch {
+    // Offline/server hiccup — keep whatever we have, stay quiet.
+  }
+}
+
+async function onRedeemCoupon(ev) {
+  ev.preventDefault();
+  const raw = els.couponCode.value.trim();
+  if (!raw) return;
+  els.couponStatus.textContent = 'Checking coupon…';
+  els.couponStatus.className = 'coupon-status';
+  SFX.click();
+  try {
+    const res = await api('/api/coupons/redeem', { code: raw, playerId: playerId() });
+    if (res.coupon && res.coupon.code) CouponStore.add(res.coupon.code);
+    els.couponCode.value = '';
+    SFX.windfall();
+    await refreshCouponStatus();
+  } catch (e) {
+    els.couponStatus.textContent = e.message;
+    els.couponStatus.className = 'coupon-status err';
+    SFX.error();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Coupon unlocks in-match (Dragon shop item, upgrade row, ability panel)
+// ---------------------------------------------------------------------------
+function applyCouponFromHello(coupon) {
+  state.coupon = coupon && coupon.entitled ? coupon : null;
+  const on = !!state.coupon;
+  els.couponBadge.classList.toggle('hidden', !on);
+  els.couponPanel.classList.toggle('hidden', !on);
+  if (!on) return;
+  const label = state.coupon.label || 'Coupon holder';
+  const until = state.coupon.expiresAt ? `valid until ${fmtExpiry(state.coupon.expiresAt)}` : '';
+  els.couponBadge.title = `${label}${until ? ' — ' + until : ''}`;
+  els.couponExpiry.textContent = `${label}${until ? ' — ' + until : ''}`;
+  // Ability costs from the authoritative balance payload.
+  const cb = state.balance && state.balance.coupon;
+  if (cb) {
+    $('ability-rockslide-cost').textContent = cb.rockslide.cost + 'c';
+    $('ability-dragonfire-cost').textContent = cb.dragonFire.cost + 'c';
+  }
+  addDragonShopItem();
+  addDragonUpgradeRow();
+}
+
+function addDragonShopItem() {
+  if (els.shop.querySelector('.dragon-item')) return;
+  const u = state.balance && state.balance.units && state.balance.units.dragon;
+  if (!u) return;
+  const btn = document.createElement('button');
+  btn.className = 'shop-item dragon-item';
+  btn.dataset.unit = 'dragon';
+  btn.dataset.cost = u.cost;
+  btn.innerHTML =
+    '<span class="si-key">8</span>' +
+    '<div class="si-top"><span class="si-name">🐉 ' + u.name + '</span><span class="si-cost">' + u.cost + 'c</span></div>' +
+    '<div class="si-role">' + u.role + ' <em>[coupon]</em></div>';
+  btn.addEventListener('click', () => { SFX.click(); selectUnit('dragon'); });
+  els.shop.insertBefore(btn, els.shop.firstChild);
+}
+
+function addDragonUpgradeRow() {
+  const u = state.balance && state.balance.units && state.balance.units.dragon;
+  if (!u || els.unitUpgrades.querySelector('[data-unit="dragon"]')) return;
+  const row = document.createElement('div');
+  row.className = 'upgrade-row';
+  row.dataset.unit = 'dragon';
+  row.innerHTML =
+    '<span class="u-name">🐉 Dragon</span>' +
+    '<span class="pips"><span class="pip" data-pip="0"></span><span class="pip" data-pip="1"></span></span>' +
+    '<button class="upgrade-btn">Upgrade</button>';
+  row.querySelector('.upgrade-btn').addEventListener('click', () => { SFX.click(); send({ type: 'upgradeUnit', unit: 'dragon' }); });
+  els.unitUpgrades.appendChild(row);
+}
+
+function selectAbility(effect) {
+  if (coarsePointer && state.selection && state.selection.kind === 'ability' && state.selection.effect === effect) { clearSelection(); return; }
+  state.selection = { kind: 'ability', effect };
+  highlightSelection();
+  if (isCompact()) setSidebar(false);
+}
+
+function abilityButtonFor(effect) {
+  return effect === 'rockslide' ? els.abilityRockslide : els.abilityDragonfire;
+}
+
+function updateAbilityButtons(snap) {
+  if (!state.coupon) return;
+  const b = state.balance && state.balance.coupon;
+  const cfgFor = (e) => (b ? (e === 'rockslide' ? b.rockslide : b.dragonFire) : null);
+  const you = snap.players[state.seat];
+  const abilities = (you && you.abilities) || {};
+  for (const effect of ABILITY_EFFECTS) {
+    const btn = els.couponPanel.querySelector(`[data-effect="${effect}"]`);
+    if (!btn) continue;
+    const cfg = cfgFor(effect);
+    const cost = cfg ? cfg.cost : 0;
+    const cd = abilities[effect] || 0;
+    const cdEl = btn.querySelector('.ab-cooldown');
+    btn.disabled = state.over || cd > 0.05 || !you || you.coins < cost;
+    if (cd > 0.05) {
+      cdEl.textContent = `Cooldown ${Math.ceil(cd)}s`;
+      cdEl.classList.remove('ready');
+    } else {
+      cdEl.textContent = 'Ready';
+      cdEl.classList.add('ready');
+    }
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Networking
@@ -336,6 +532,7 @@ function handleServerMessage(msg) {
       els.sideBadge.className = 'side-badge ' + (msg.seat === 0 ? 'a' : 'b');
       buildShop();
       buildUpgradePanels();
+      applyCouponFromHello(msg.coupon || null);
       break;
     case 'matchStart':
       els.waiting.classList.add('hidden');
@@ -372,6 +569,7 @@ function handleServerMessage(msg) {
     case 'error':
       SFX.error();
       showToast(msg.message || 'Action rejected', false);
+      if (/coupon/i.test(msg.message || '')) refreshCouponStatus();
       break;
   }
 }
@@ -391,6 +589,7 @@ function onSnapshot(snap) {
   updateEconomyHUD(snap);
   updateUpgradeButtons(snap);
   updateTurretButtons(snap);
+  updateAbilityButtons(snap);
   updateBreachWarning(snap);
   for (const ev of snap.events || []) handleEvent(ev);
 
@@ -539,6 +738,7 @@ function showGameOver(snap) {
     SFX.lose();
   }
   document.querySelectorAll('.shop-item, .upgrade-btn, .turret-cell button').forEach((b) => { b.disabled = true; });
+  els.couponPanel.querySelectorAll('.ability-btn').forEach((b) => { b.disabled = true; });
   setSidebar(false);
   els.shopToggle.classList.add('hidden');
   // Match stats table
@@ -574,6 +774,7 @@ function resetForRematch() {
   els.shop.querySelectorAll('.shop-item').forEach((b) => { b.disabled = false; });
   els.turretUpgrades.querySelectorAll('button').forEach((b) => { b.disabled = false; });
   els.unitUpgrades.querySelectorAll('.upgrade-btn').forEach((b) => { b.disabled = false; });
+  els.couponPanel.querySelectorAll('.ability-btn').forEach((b) => { b.disabled = false; });
   els.resignBtn.disabled = false;
   resetResignButton();
   els.shopToggle.classList.remove('hidden');
@@ -758,10 +959,18 @@ function highlightSelection() {
     const isTurret = sel && sel.kind === 'turret' && !btn.dataset.unit && !btn.dataset.factory;
     btn.classList.toggle('selected', !!(isUnit || isTurret));
   });
+  const isAbility = sel && sel.kind === 'ability';
+  ABILITY_EFFECTS.forEach((effect) => {
+    const btn = abilityButtonFor(effect);
+    if (btn) btn.classList.toggle('selected', !!(isAbility && sel.effect === effect));
+  });
+  const abilityNames = { rockslide: 'Rockslide', dragonfire: 'Dragon Fire' };
   els.selHint.textContent = sel
     ? (sel.kind === 'turret'
         ? (coarsePointer ? 'Tap a lane to build in a free slot. Tap the turret again to cancel.' : 'Click a lane to build in a free turret slot. Right-click / Esc to cancel.')
-        : (coarsePointer ? 'Tap a lane to deploy. Tap the item again to cancel.' : 'Click a lane to deploy. Right-click / Esc to cancel.'))
+        : sel.kind === 'ability'
+          ? (coarsePointer ? `Tap a lane to cast ${abilityNames[sel.effect] || 'the effect'}. Tap the card again to cancel.` : `Click a lane to unleash ${abilityNames[sel.effect] || 'the effect'}. Right-click / Esc to cancel.`)
+          : (coarsePointer ? 'Tap a lane to deploy. Tap the item again to cancel.' : 'Click a lane to deploy. Right-click / Esc to cancel.'))
     : (coarsePointer ? 'Tap a unit, then tap a lane.' : 'Select a unit, then click a lane. Right-click / Esc to cancel.');
 }
 
@@ -816,16 +1025,23 @@ function ingestFx(prev, snap) {
       spawnProjectile(f);
       const isSiege = f.unit === 'siege';
       const isTurret = f.unit === 'turret';
-      const fy = (isTurret ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - 4;
+      const isDragon = f.unit === 'dragon';
+      const fy = (isTurret ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - (isDragon ? 14 : 4);
       fx.flashes.push({
         x: px(f.fromX), y: fy,
-        r: isSiege ? 16 : isTurret ? 9 : 7,
-        until: now + (isSiege ? 150 : 90),
-        color: isSiege ? 'rgba(253,224,71,0.9)' : 'rgba(254,240,138,0.85)',
+        r: isSiege ? 16 : isDragon ? 14 : isTurret ? 9 : 7,
+        until: now + (isSiege ? 150 : isDragon ? 130 : 90),
+        color: isDragon ? 'rgba(251,146,60,0.85)' : isSiege ? 'rgba(253,224,71,0.9)' : 'rgba(254,240,138,0.85)',
       });
-      if (isSiege) SFX.shell(); else if (isTurret) SFX.turretShot(); else SFX.arrow();
+      if (isSiege) SFX.shell(); else if (isTurret) SFX.turretShot(); else if (isDragon) SFX.fire(); else SFX.arrow();
     } else if (f.kind === 'melee') {
       meleeSparks(f.toX, f.lane, 4);
+    } else if (f.kind === 'rockslide') {
+      rockslideFx(f.lane);
+    } else if (f.kind === 'dragonfire') {
+      dragonFireFx(f.lane);
+    } else if (f.kind === 'burn') {
+      emberBurst(f.lane, 4);
     }
   }
 }
@@ -840,12 +1056,14 @@ function turretX(side) {
 const px = (fieldX) => (fieldX / 100) * (FIELD.x1 - FIELD.x0) + FIELD.x0;
 
 function spawnProjectile(f) {
-  const y = (f.unit === 'turret' ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - 4;
+  const isDragon = f.unit === 'dragon';
+  const y = (f.unit === 'turret' ? turretSlotY(f.lane, f.slot || 0) : laneY(f.lane)) - (isDragon ? 14 : 4);
   const x0 = px(f.fromX), x1 = px(f.toX);
   const dist = Math.abs(x1 - x0);
   let kind = 'arrow', dur = Math.min(0.5, Math.max(0.16, dist / 620)), arc = 14;
   if (f.unit === 'siege') { kind = 'shell'; dur = Math.min(1.15, Math.max(0.45, dist / 430)); arc = 78; }
   else if (f.unit === 'turret') { kind = 'bullet'; dur = Math.max(0.07, dist / 980); arc = 0; }
+  else if (isDragon) { kind = 'fireball'; dur = Math.min(0.45, Math.max(0.18, dist / 700)); arc = 6; }
   fx.projectiles.push({
     kind, x0, x1, y0: y, y1: y, y, t: 0, dur, arc,
     dir: Math.sign(x1 - x0) || 1,
@@ -896,6 +1114,71 @@ function boomAt(x, y, scale) {
   fx.rings.push({ x, y, r: 6, maxR: 46 * scale, life: 0.45, maxLife: 0.45 });
 }
 
+// Rockfall telegraphed across a whole lane: rocks rain from the top edge,
+// then the lane flashes. Damage itself is applied server-side.
+function rockslideFx(lane) {
+  const y = laneY(lane);
+  for (let i = 0; i < 26; i++) {
+    fx.particles.push({
+      x: FIELD.x0 + Math.random() * (FIELD.x1 - FIELD.x0),
+      y: -20 - Math.random() * 140,
+      vx: (Math.random() - 0.5) * 70,
+      vy: 240 + Math.random() * 180,
+      grav: 950,
+      life: 0.8 + Math.random() * 0.35,
+      maxLife: 1.1,
+      size: 2.5 + Math.random() * 4,
+      color: ['#a8a29e', '#78716c', '#57534e', '#d6d3d1'][Math.floor(Math.random() * 4)],
+    });
+  }
+  for (let i = 0; i < 5; i++) {
+    fx.flashes.push({ x: FIELD.x0 + ((i + 0.5) / 5) * (FIELD.x1 - FIELD.x0), y, r: 90, until: performance.now() + 140, color: 'rgba(231,229,228,0.4)' });
+  }
+  fx.shake = Math.max(fx.shake, 9);
+  SFX.rockfall();
+}
+
+// Ignition burst for Dragon Fire: a wall of flame along the lane.
+function dragonFireFx(lane) {
+  const y = laneY(lane);
+  for (let i = 0; i < 34; i++) {
+    fx.particles.push({
+      x: FIELD.x0 + Math.random() * (FIELD.x1 - FIELD.x0),
+      y: y + (Math.random() - 0.5) * LANE_H * 0.7,
+      vx: (Math.random() - 0.5) * 90,
+      vy: -40 - Math.random() * 90,
+      grav: -60,
+      life: 0.55 + Math.random() * 0.5,
+      maxLife: 1.0,
+      size: 2.5 + Math.random() * 3.5,
+      color: ['#fdba74', '#fb923c', '#f97316', '#fde047', '#ef4444'][Math.floor(Math.random() * 5)],
+    });
+  }
+  for (let i = 0; i < 5; i++) {
+    fx.flashes.push({ x: FIELD.x0 + ((i + 0.5) / 5) * (FIELD.x1 - FIELD.x0), y, r: 110, until: performance.now() + 140, color: 'rgba(249,115,22,0.45)' });
+  }
+  fx.shake = Math.max(fx.shake, 5);
+  SFX.inferno();
+}
+
+// A few embers for each burn tick so active fire zones shimmer.
+function emberBurst(lane, n) {
+  const y = laneY(lane);
+  for (let i = 0; i < (n || 3); i++) {
+    fx.particles.push({
+      x: FIELD.x0 + Math.random() * (FIELD.x1 - FIELD.x0),
+      y: y + (Math.random() - 0.5) * LANE_H * 0.75,
+      vx: (Math.random() - 0.5) * 40,
+      vy: -30 - Math.random() * 60,
+      grav: -40,
+      life: 0.5 + Math.random() * 0.4,
+      maxLife: 0.9,
+      size: 1.6 + Math.random() * 2.2,
+      color: ['#fdba74', '#fb923c', '#fde047'][Math.floor(Math.random() * 3)],
+    });
+  }
+}
+
 function stepFx(dt) {
   for (let i = fx.projectiles.length - 1; i >= 0; i--) {
     const p = fx.projectiles[i];
@@ -908,12 +1191,31 @@ function stepFx(dt) {
         grav: 0, life: 0.38, maxLife: 0.38, size: 1.5 + Math.random(),
         color: 'rgba(148,163,184,0.65)',
       });
+    } else if (p.kind === 'fireball' && Math.random() < 0.85) {
+      const pos = projPos(p, Math.min(1, p.t));
+      fx.particles.push({
+        x: pos.x + (Math.random() - 0.5) * 4, y: pos.y + (Math.random() - 0.5) * 4,
+        vx: (Math.random() - 0.5) * 30 - p.dir * 30, vy: (Math.random() - 0.5) * 30,
+        grav: 0, life: 0.4, maxLife: 0.4, size: 1.6 + Math.random() * 1.8,
+        color: ['#fdba74', '#fb923c', '#fde047'][Math.floor(Math.random() * 3)],
+      });
     }
     if (p.t >= 1) {
       if (p.kind === 'shell') {
         boomAt(p.x1, p.y, 1.15);
         fx.shake = Math.max(fx.shake, 5);
         SFX.boom();
+      } else if (p.kind === 'fireball') {
+        for (let k = 0; k < 8; k++) {
+          const a = Math.random() * Math.PI * 2;
+          const sp = 40 + Math.random() * 70;
+          fx.particles.push({
+            x: p.x1, y: p.y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 30,
+            grav: 160, life: 0.35 + Math.random() * 0.25, maxLife: 0.6,
+            size: 1.6 + Math.random() * 2, color: ['#fb923c', '#fdba74', '#fde047'][k % 3],
+          });
+        }
+        fx.flashes.push({ x: p.x1, y: p.y, r: 26, until: performance.now() + 120, color: 'rgba(251,146,60,0.7)' });
       } else {
         // small impact puff for arrows/bullets
         for (let k = 0; k < 3; k++) {
@@ -1027,6 +1329,51 @@ function drawCaches(snap, now) {
   }
 }
 
+// Burning lanes (Dragon Fire). Drawn as a flickering amber wash with
+// licking flame tongues; ember particles are spawned into the fx layer.
+function drawBurns(snap, now) {
+  const burns = snap.burns || [];
+  for (const b of burns) {
+    const y0 = FIELD.y0 + b.lane * LANE_H;
+    const life = Math.max(0, Math.min(1, (b.remaining || 0) / 1.2)); // fade out at the end
+    const flick = 0.75 + 0.25 * Math.sin(now / 90 + b.lane * 2.1) + 0.1 * Math.sin(now / 37 + b.lane);
+    const a = 0.34 * life * flick;
+    const g = ctx.createLinearGradient(0, y0, 0, y0 + LANE_H);
+    g.addColorStop(0, 'rgba(249,115,22,0)');
+    g.addColorStop(0.5, `rgba(249,115,22,${a})`);
+    g.addColorStop(1, 'rgba(239,68,68,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(FIELD.x0, y0, FIELD.x1 - FIELD.x0, LANE_H);
+    // flame tongues
+    ctx.fillStyle = `rgba(253,186,116,${0.5 * life * flick})`;
+    const tongues = 16;
+    for (let i = 0; i < tongues; i++) {
+      const tx = FIELD.x0 + ((i + 0.5) / tongues) * (FIELD.x1 - FIELD.x0);
+      const h = (10 + 9 * Math.sin(now / 110 + i * 1.7 + b.lane)) * life;
+      if (h <= 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(tx - 6, y0 + LANE_H);
+      ctx.quadraticCurveTo(tx, y0 + LANE_H - h * 2.2, tx + 6, y0 + LANE_H);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // rising embers
+    if (Math.random() < 0.5) {
+      fx.particles.push({
+        x: FIELD.x0 + Math.random() * (FIELD.x1 - FIELD.x0),
+        y: y0 + LANE_H - 4,
+        vx: (Math.random() - 0.5) * 24,
+        vy: -35 - Math.random() * 55,
+        grav: -30,
+        life: 0.6 + Math.random() * 0.4,
+        maxLife: 1.0,
+        size: 1.4 + Math.random() * 1.6,
+        color: ['#fdba74', '#fb923c', '#fde047'][Math.floor(Math.random() * 3)],
+      });
+    }
+  }
+}
+
 function draw() {
   requestAnimationFrame(draw);
   const now = performance.now();
@@ -1044,6 +1391,7 @@ function draw() {
   if (snap) {
     drawPads(snap);
     drawCaches(snap, now);
+    drawBurns(snap, now);
     drawTurrets(snap, now);
     drawUnits(snap, now);
     drawProjectiles();
@@ -1209,19 +1557,20 @@ function drawUnits(snap, now) {
     const dark = u.side === 0 ? '#0c4a6e' : '#881337';
     const dir = u.side === 0 ? 1 : -1;
 
-    // walk bob
+    // walk bob (dragons hover instead of walking)
     const prev = state.snapPrev && state.snapPrev.units.find((p) => p.id === u.id);
     const moving = prev ? Math.abs(u.x - prev.x) > 0.005 : true;
     const bob = moving ? Math.sin(now * 0.012 + u.id * 1.7) * 1.8 : 0;
+    const hover = u.type === 'dragon' ? Math.sin(now * 0.0045 + u.id * 1.7) * 3.5 - 9 : bob;
 
     // shadow
-    ctx.fillStyle = 'rgba(0,0,0,0.32)';
+    ctx.fillStyle = u.type === 'dragon' ? 'rgba(0,0,0,0.22)' : 'rgba(0,0,0,0.32)';
     ctx.beginPath();
-    ctx.ellipse(ux, uy + 12, 13, 4, 0, 0, Math.PI * 2);
+    ctx.ellipse(ux, uy + 12, u.type === 'dragon' ? 15 : 13, 4, 0, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.save();
-    ctx.translate(ux, uy + bob);
+    ctx.translate(ux, uy + hover);
     ctx.scale(dir, 1);
     ctx.lineWidth = 2;
     ctx.strokeStyle = dark;
@@ -1283,10 +1632,77 @@ function drawUnits(snap, now) {
         ctx.fillStyle = '#64748b';
         ctx.beginPath(); ctx.arc(-9, 8.5, 1.6, 0, Math.PI * 2); ctx.arc(9, 8.5, 1.6, 0, Math.PI * 2); ctx.fill();
         break;
+      case 'dragon': {
+        const wing = u.side === 0 ? '#38bdf8' : '#fb7185';
+        const flap = Math.sin(now * 0.011 + u.id * 1.7);
+        // far wing
+        ctx.fillStyle = 'rgba(109,40,217,0.85)';
+        ctx.beginPath();
+        ctx.moveTo(-1, -5);
+        ctx.quadraticCurveTo(-8, -18 - flap * 6, -21, -12 - flap * 8);
+        ctx.lineTo(-5, 1);
+        ctx.closePath(); ctx.fill();
+        // tail with flame tip
+        const wag = Math.sin(now * 0.006 + u.id) * 3;
+        ctx.strokeStyle = '#6d28d9'; ctx.lineWidth = 4; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(-11, 1); ctx.quadraticCurveTo(-19, 3 + wag, -27, -2 + wag * 1.6); ctx.stroke();
+        ctx.fillStyle = '#f97316';
+        ctx.beginPath();
+        const tailTipY = -2 + wag * 1.6;
+        ctx.moveTo(-27, tailTipY - 3); ctx.lineTo(-33, tailTipY); ctx.lineTo(-27, tailTipY + 3);
+        ctx.closePath(); ctx.fill();
+        // body
+        ctx.fillStyle = '#7c3aed';
+        ctx.strokeStyle = '#2e1065'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.ellipse(0, 0, 13, 7.4, -0.06, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        // belly
+        ctx.fillStyle = '#fde68a';
+        ctx.beginPath(); ctx.ellipse(1.5, 2.6, 8.5, 3.6, 0, 0, Math.PI); ctx.fill();
+        // back spikes
+        ctx.fillStyle = '#fbbf24';
+        for (const sx of [-6, 0, 6]) {
+          ctx.beginPath(); ctx.moveTo(sx - 2.2, -5.4); ctx.lineTo(sx, -10.5); ctx.lineTo(sx + 2.2, -5.4); ctx.closePath(); ctx.fill();
+        }
+        // legs tucked
+        ctx.strokeStyle = '#4c1d95'; ctx.lineWidth = 2.4;
+        ctx.beginPath(); ctx.moveTo(-4, 6); ctx.lineTo(-6, 10.5); ctx.moveTo(6, 6); ctx.lineTo(8, 10.5); ctx.stroke();
+        // head
+        ctx.fillStyle = '#7c3aed';
+        ctx.strokeStyle = '#2e1065'; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(12.5, -6, 5.6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        // snout
+        ctx.beginPath(); ctx.moveTo(15.5, -9.2); ctx.lineTo(23.5, -5.4); ctx.lineTo(15.5, -2.6); ctx.closePath(); ctx.fill(); ctx.stroke();
+        // horns
+        ctx.fillStyle = '#fde68a';
+        ctx.beginPath(); ctx.moveTo(9.5, -10.2); ctx.lineTo(7.5, -15.5); ctx.lineTo(12.5, -11.4); ctx.closePath(); ctx.fill();
+        ctx.beginPath(); ctx.moveTo(13.5, -10.8); ctx.lineTo(12.5, -16); ctx.lineTo(16.5, -11.2); ctx.closePath(); ctx.fill();
+        // eye (molten)
+        ctx.save();
+        ctx.shadowColor = '#fbbf24'; ctx.shadowBlur = 6;
+        ctx.fillStyle = '#fde047';
+        ctx.beginPath(); ctx.arc(13.6, -6.6, 1.35, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+        // near wing
+        ctx.fillStyle = wing;
+        ctx.globalAlpha = 0.9;
+        ctx.beginPath();
+        ctx.moveTo(1, -5);
+        ctx.quadraticCurveTo(-4, -24 - flap * 7, -19, -17 - flap * 9);
+        ctx.lineTo(-3, 1);
+        ctx.closePath(); ctx.fill();
+        ctx.globalAlpha = 1;
+        ctx.strokeStyle = '#2e1065'; ctx.lineWidth = 1.4;
+        ctx.stroke();
+        break;
+      }
     }
     ctx.restore();
 
-    drawHealthBar(ux - 13, uy - 18, 26, 3.6, u.hp / u.maxHp);
+    if (u.type === 'dragon') {
+      drawHealthBar(ux - 17, uy - 34, 34, 4.2, u.hp / u.maxHp);
+    } else {
+      drawHealthBar(ux - 13, uy - 18, 26, 3.6, u.hp / u.maxHp);
+    }
   }
 }
 
@@ -1322,6 +1738,19 @@ function drawProjectiles() {
       ctx.fillStyle = '#f8fafc';
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    } else if (p.kind === 'fireball') {
+      ctx.save();
+      ctx.shadowColor = '#fb923c';
+      ctx.shadowBlur = 12;
+      const g = ctx.createRadialGradient(pos.x, pos.y, 0, pos.x, pos.y, 6);
+      g.addColorStop(0, '#fef08a');
+      g.addColorStop(0.45, '#fb923c');
+      g.addColorStop(1, 'rgba(239,68,68,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
     }
@@ -1521,7 +1950,7 @@ async function onCreate() {
   els.lobbyError.textContent = '';
   SFX.click();
   try {
-    const res = await api('/api/rooms', {});
+    const res = await api('/api/rooms', couponPayload());
     await enterGame(res.code, res.token, res.seat);
   } catch (e) {
     els.lobbyError.textContent = e.message;
@@ -1538,7 +1967,7 @@ async function onJoin(ev) {
     return;
   }
   try {
-    const res = await api(`/api/rooms/${encodeURIComponent(code)}/join`, {});
+    const res = await api(`/api/rooms/${encodeURIComponent(code)}/join`, couponPayload());
     await enterGame(res.code, res.token, res.seat);
   } catch (e) {
     els.lobbyError.textContent = e.message;
@@ -1546,10 +1975,11 @@ async function onJoin(ev) {
 }
 
 async function tryResume() {
+  tryResumeCouponStatus(); // refresh the lobby coupon badge either way
   const saved = SS.load();
   if (!saved) return;
   try {
-    const res = await api(`/api/rooms/${encodeURIComponent(saved.code)}/rejoin`, { token: saved.token });
+    const res = await api(`/api/rooms/${encodeURIComponent(saved.code)}/rejoin`, Object.assign(couponPayload(), { token: saved.token }));
     await enterGame(res.code, res.token, res.seat);
   } catch {
     SS.clear();
@@ -1579,6 +2009,7 @@ function backToMenu() {
   resetResignButton();
   els.resignBtn.disabled = false;
   SFX.click();
+  refreshCouponStatus();
   showScreen('lobby');
 }
 
@@ -1655,6 +2086,15 @@ els.resignBtn.addEventListener('click', () => {
   send({ type: 'resign' });
 });
 
+// Coupon redeem form + in-match ability buttons
+if (els.couponForm) {
+  els.couponForm.addEventListener('submit', onRedeemCoupon);
+}
+for (const effect of ABILITY_EFFECTS) {
+  const btn = abilityButtonFor(effect);
+  if (btn) btn.addEventListener('click', () => { SFX.unlock(); selectAbility(effect); });
+}
+
 $('btn-copy').addEventListener('click', () => copyCode());
 $('btn-copy-2').addEventListener('click', () => copyCode());
 function copyCode() {
@@ -1681,6 +2121,9 @@ cv.addEventListener('click', (ev) => {
   } else if (state.selection.kind === 'turret') {
     SFX.build();
     send({ type: 'turret', lane });
+  } else if (state.selection.kind === 'ability') {
+    SFX.click();
+    send({ type: 'fieldEffect', effect: state.selection.effect, lane });
   }
 });
 cv.addEventListener('mousemove', (ev) => { state.hoverLane = laneFromEvent(ev); });
@@ -1698,6 +2141,12 @@ if (els.rotateDismiss) els.rotateDismiss.addEventListener('click', () => {
 window.addEventListener('keydown', (ev) => {
   if (state.screen !== 'game') return;
   if (ev.key === 'Escape') { clearSelection(); setSidebar(false); return; }
+  if (state.coupon && COUPON_HOTKEYS[ev.key]) {
+    SFX.unlock();
+    const couponKey = COUPON_HOTKEYS[ev.key];
+    if (couponKey === 'dragon') { SFX.click(); selectUnit('dragon'); } else { selectAbility(couponKey); }
+    return;
+  }
   const unit = HOTKEYS[ev.key];
   if (!unit) return;
   SFX.unlock();
@@ -1712,5 +2161,6 @@ document.addEventListener('pointerdown', () => SFX.unlock(), { once: true });
 
 // boot
 els.muteBtn.textContent = SFX.isMuted() ? '🔇' : '🔊';
+refreshCouponStatus();
 requestAnimationFrame(draw);
 tryResume();

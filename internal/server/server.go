@@ -24,6 +24,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"lanesiege/internal/coupons"
 	"lanesiege/internal/sim"
 )
 
@@ -32,9 +33,11 @@ import (
 // ---------------------------------------------------------------------------
 
 type player struct {
-	token string
-	seat  int
-	conn  *wsConn
+	token    string
+	seat     int
+	conn     *wsConn
+	playerID string   // client-generated id from localStorage, used for coupon redemption records
+	coupons  []string // coupon codes this player holds (validated server-side, rechecked live)
 }
 
 type wsConn struct {
@@ -57,8 +60,10 @@ type room struct {
 type Server struct {
 	balance sim.Balance
 
-	mu    sync.Mutex
-	rooms map[string]*room
+	mu         sync.Mutex
+	rooms      map[string]*room
+	coupons    *coupons.Store
+	adminToken string
 
 	httpServer *http.Server
 	stop       chan struct{}
@@ -66,20 +71,44 @@ type Server struct {
 	wg         sync.WaitGroup
 }
 
-// New builds a Server. webFS must contain the client (index.html, style.css,
-// client.js) at its root; pass os.DirFS(dir) in development or the embedded
-// filesystem for a self-contained binary. It is served at "/".
-func New(webFS fs.FS) *Server {
+// Options carries optional dependencies for NewWithOptions.
+type Options struct {
+	// Coupons is the coupon store; nil means an in-memory store (data is
+	// lost on restart). main wires a file-backed store for production.
+	Coupons *coupons.Store
+	// AdminToken guards the /api/admin/* endpoints. Empty disables them.
+	AdminToken string
+}
+
+// New builds a Server with default options (in-memory coupons, admin API off).
+func New(webFS fs.FS) *Server { return NewWithOptions(webFS, Options{}) }
+
+// NewWithOptions builds a Server with explicit coupon store and admin token.
+// webFS must contain the client (index.html, style.css, client.js) at its
+// root; pass os.DirFS(dir) in development or the embedded filesystem for a
+// self-contained binary. It is served at "/".
+func NewWithOptions(webFS fs.FS, opts Options) *Server {
+	store := opts.Coupons
+	if store == nil {
+		store = coupons.New()
+	}
 	s := &Server{
-		balance: sim.DefaultBalance(),
-		rooms:   map[string]*room{},
-		stop:    make(chan struct{}),
+		balance:    sim.DefaultBalance(),
+		rooms:      map[string]*room{},
+		coupons:    store,
+		adminToken: opts.AdminToken,
+		stop:       make(chan struct{}),
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/join", s.handleJoinRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/rejoin", s.handleRejoin)
+	mux.HandleFunc("POST /api/coupons/redeem", s.handleRedeemCoupon)
+	mux.HandleFunc("POST /api/coupons/status", s.handleCouponStatus)
+	mux.HandleFunc("POST /api/admin/coupons", s.handleAdminCreateCoupon)
+	mux.HandleFunc("GET /api/admin/coupons", s.handleAdminListCoupons)
+	mux.HandleFunc("POST /api/admin/coupons/{code}/revoke", s.handleAdminRevokeCoupon)
 	mux.HandleFunc("GET /ws", s.handleWS)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -162,6 +191,37 @@ func randomSeed() int64 {
 	return int64(binary.LittleEndian.Uint64(buf[:]))
 }
 
+// lobbyIdentity carries the client-generated player id and any coupon codes
+// the client holds. Both are optional; missing values just mean no entitlement.
+type lobbyIdentity struct {
+	playerID string
+	coupons  []string
+}
+
+// parseLobbyIdentity reads the optional identity body sent with create/join/
+// rejoin requests. Coupon codes are validated against the store right away;
+// only currently-valid codes are stored on the player.
+func (s *Server) parseLobbyIdentity(r *http.Request) lobbyIdentity {
+	var id lobbyIdentity
+	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
+	if err != nil {
+		return id
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return id
+	}
+	var raw struct {
+		PlayerID string   `json:"playerId"`
+		Coupons  []string `json:"coupons"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return id
+	}
+	id.playerID = normalizePlayerID(raw.PlayerID)
+	id.coupons = s.entitledCoupons(raw.Coupons)
+	return id
+}
+
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -173,6 +233,8 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 }
 
 func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
+	identity := s.parseLobbyIdentity(r)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -197,7 +259,7 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rooms[code] = &room{
 		code:    code,
-		players: [2]*player{{token: token, seat: 0}, nil},
+		players: [2]*player{{token: token, seat: 0, playerID: identity.playerID, coupons: identity.coupons}, nil},
 		game:    sim.New(randomSeed(), s.balance),
 		state:   "waiting",
 		created: time.Now(),
@@ -205,11 +267,13 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	log.Printf("room %s created", code)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": code, "token": token, "seat": 0, "side": "A",
+		"entitled": len(identity.coupons) > 0,
 	})
 }
 
 func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(strings.TrimSpace(r.PathValue("code")))
+	identity := s.parseLobbyIdentity(r)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -227,19 +291,24 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "could not allocate token")
 		return
 	}
-	rm.players[1] = &player{token: token, seat: 1}
+	rm.players[1] = &player{token: token, seat: 1, playerID: identity.playerID, coupons: identity.coupons}
 	log.Printf("room %s joined by player 2", code)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": code, "token": token, "seat": 1, "side": "B",
+		"entitled": len(identity.coupons) > 0,
 	})
 }
 
 // handleRejoin lets a disconnected/refreshed client reclaim its seat with
-// its token. Used by the browser on page load.
+// its token. Used by the browser on page load. The body may also carry an
+// updated playerId/coupons list (e.g. the player redeemed a coupon while
+// away), which is applied before the hello payload is built.
 func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 	code := strings.ToUpper(strings.TrimSpace(r.PathValue("code")))
 	var body struct {
-		Token string `json:"token"`
+		Token    string   `json:"token"`
+		PlayerID string   `json:"playerId"`
+		Coupons  []string `json:"coupons"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -254,9 +323,16 @@ func (s *Server) handleRejoin(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, p := range rm.players {
 		if p != nil && p.token == body.Token {
+			if id := normalizePlayerID(body.PlayerID); id != "" {
+				p.playerID = id
+			}
+			if body.Coupons != nil {
+				p.coupons = s.entitledCoupons(body.Coupons)
+			}
 			writeJSON(w, http.StatusOK, map[string]any{
 				"code": code, "token": p.token, "seat": p.seat,
-				"side": map[int]string{0: "A", 1: "B"}[p.seat],
+				"side":     map[int]string{0: "A", 1: "B"}[p.seat],
+				"entitled": s.playerEntitled(p),
 			})
 			return
 		}

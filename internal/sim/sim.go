@@ -25,19 +25,31 @@ const (
 	ActionBuildFactory
 	ActionUpgradeUnit
 	ActionUpgradeTurret
+	ActionFieldEffect
 )
 
-// Action is a player intention. Lane is used for deploy/turret actions, Unit
-// for deploy/upgrade-unit actions. For ActionBuildTurret the turret takes the
-// first free slot in the lane and Slot is ignored (slots are interchangeable).
-// For ActionUpgradeTurret, Slot selects which turret to upgrade; a negative
-// Slot means "the lowest-slot turret in the lane".
+// Coupon field-effect identifiers (balance lives in Balance.Coupon).
+const (
+	EffectRockslide  = "rockslide"
+	EffectDragonFire = "dragonfire"
+)
+
+// Action is a player intention. Lane is used for deploy/turret/field-effect
+// actions, Unit for deploy/upgrade-unit actions. For ActionBuildTurret the
+// turret takes the first free slot in the lane and Slot is ignored (slots are
+// interchangeable). For ActionUpgradeTurret, Slot selects which turret to
+// upgrade; a negative Slot means "the lowest-slot turret in the lane".
+//
+// Entitled is set by the server (never by the client) and marks the player as
+// holding a valid coupon; it unlocks CouponOnly units and field effects.
 type Action struct {
-	Kind ActionKind
-	Side int // SideA or SideB, filled in by the server from the connection
-	Lane int
-	Unit UnitType
-	Slot int
+	Kind     ActionKind
+	Side     int // SideA or SideB, filled in by the server from the connection
+	Lane     int
+	Unit     UnitType
+	Slot     int
+	Effect   string // field-effect id for ActionFieldEffect
+	Entitled bool   // set by the server from the coupon store; never trusted from clients
 }
 
 var (
@@ -51,6 +63,9 @@ var (
 	ErrOvertime       = errors.New("locked during overtime")
 	ErrMaxLevel       = errors.New("already at maximum level")
 	ErrFactoryBuilt   = errors.New("factory already built")
+	ErrCouponRequired = errors.New("requires an active coupon")
+	ErrOnCooldown     = errors.New("effect is not ready yet")
+	ErrUnknownEffect  = errors.New("unknown field effect")
 )
 
 // ---------------------------------------------------------------------------
@@ -96,6 +111,17 @@ type Cache struct {
 	X         float64 `json:"x"`
 	Amount    int     `json:"amount"`
 	ExpiresAt float64 `json:"expiresAt"`
+}
+
+// Burn is an active Dragon Fire field effect: a lane left ablaze, damaging
+// every unit (of either side, except the caster's own) inside it over time.
+type Burn struct {
+	Lane       int
+	Side       int     // caster side; burns everyone except the caster's own units
+	Until      float64 // sim time at which the burn expires
+	TickIn     float64 // seconds until the next damage tick
+	Interval   float64 // seconds between damage ticks
+	TickDamage float64
 }
 
 // Player holds per-player economy and upgrade state.
@@ -190,6 +216,8 @@ type Sim struct {
 	nextCacheIdx int
 	streakCount  [2]int
 	lastKillAt   [2]float64
+	burns        []Burn
+	abilityReady [2]map[string]float64
 }
 
 // New creates a fresh match. seed makes the shared windfall sequence
@@ -210,6 +238,7 @@ func New(seed int64, cfg Balance) *Sim {
 			UnitUpgrades: map[UnitType]int{},
 		}
 		s.lastKillAt[i] = -100
+		s.abilityReady[i] = map[string]float64{}
 	}
 	s.windfallIn = s.rollWindfallGap()
 	return s
@@ -273,6 +302,9 @@ func (s *Sim) ApplyAction(a Action) error {
 		ub, ok := s.cfg.Units[a.Unit]
 		if !ok {
 			return ErrUnknownUnit
+		}
+		if ub.CouponOnly && !a.Entitled {
+			return ErrCouponRequired
 		}
 		if p.Coins < ub.Cost {
 			return fmt.Errorf("%w: need %d", ErrNotEnoughCoins, ub.Cost)
@@ -399,8 +431,85 @@ func (s *Sim) ApplyAction(a Action) error {
 		t.MaxHP += s.cfg.Turret.MaxHP * s.cfg.Turret.UpgradeHPPerLevel
 		t.Damage = s.cfg.Turret.Damage * (1 + float64(t.Level)*s.cfg.Turret.UpgradeDamagePerLevel)
 		return nil
+
+	case ActionFieldEffect:
+		return s.applyFieldEffect(a, p)
 	}
 	return errors.New("unknown action")
+}
+
+// effectConfig resolves a field-effect id to its balance row.
+func (s *Sim) effectConfig(id string) (FieldEffectBalance, bool) {
+	switch id {
+	case EffectRockslide:
+		return s.cfg.Coupon.Rockslide, true
+	case EffectDragonFire:
+		return s.cfg.Coupon.DragonFire, true
+	default:
+		return FieldEffectBalance{}, false
+	}
+}
+
+// applyFieldEffect casts a coupon-gated, lane-targeted field effect.
+// Casting requires an active coupon, a valid lane, a ready cooldown and
+// enough coins; coins are only spent on a successful cast.
+func (s *Sim) applyFieldEffect(a Action, p *Player) error {
+	if !validLane(a.Lane) {
+		return ErrInvalidLane
+	}
+	cfg, ok := s.effectConfig(a.Effect)
+	if !ok {
+		return fmt.Errorf("%w: %q", ErrUnknownEffect, a.Effect)
+	}
+	if !a.Entitled {
+		return ErrCouponRequired
+	}
+	if readyAt := s.abilityReady[a.Side][a.Effect]; s.Time < readyAt {
+		return fmt.Errorf("%w: %.0fs", ErrOnCooldown, readyAt-s.Time)
+	}
+	if p.Coins < cfg.Cost {
+		return fmt.Errorf("%w: need %d", ErrNotEnoughCoins, cfg.Cost)
+	}
+	p.Coins -= cfg.Cost
+	s.abilityReady[a.Side][a.Effect] = s.Time + cfg.Cooldown
+
+	switch a.Effect {
+	case EffectRockslide:
+		damaged := 0
+		for _, u := range s.units {
+			if u.Side == a.Side || u.Lane != a.Lane || u.HP <= 0 {
+				continue
+			}
+			// Rocks fall from the sky; flying dragons dodge them.
+			if s.cfg.Units[u.Type].Flying {
+				continue
+			}
+			s.dealDamage(a.Side, u, cfg.Damage)
+			damaged++
+		}
+		s.addEvent(a.Side, "rockslide", "%s called a Rockslide down on lane %d! (%d enemies hit)", sideName(a.Side), a.Lane+1, damaged)
+		s.fx = append(s.fx, FxEvent{Kind: "rockslide", Side: a.Side, Lane: a.Lane, Slot: -1})
+	case EffectDragonFire:
+		duration := cfg.Duration
+		if duration <= 0 {
+			duration = 6
+		}
+		interval := cfg.TickInterval
+		if interval <= 0 {
+			interval = 0.5
+		}
+		s.burns = append(s.burns, Burn{
+			Lane:       a.Lane,
+			Side:       a.Side,
+			Until:      s.Time + duration,
+			TickIn:     interval, // first tick lands after one interval
+			Interval:   interval,
+			TickDamage: cfg.Damage,
+		})
+		s.addEvent(a.Side, "dragonfire", "%s set lane %d ablaze with Dragon Fire!", sideName(a.Side), a.Lane+1)
+		s.fx = append(s.fx, FxEvent{Kind: "dragonfire", Side: a.Side, Lane: a.Lane, Slot: -1})
+	}
+	return nil
 }
 
 func validLane(l int) bool { return l >= 0 && l < NumLanes }
@@ -472,6 +581,9 @@ func (s *Sim) Step(dt float64) {
 	// --- Supply caches ---
 	s.stepCaches()
 
+	// --- Dragon Fire burn zones ---
+	s.stepBurns(dt)
+
 	// --- Kill streak decay ---
 	for side := 0; side < 2; side++ {
 		if s.streakCount[side] > 0 && s.Time-s.lastKillAt[side] > 3.0 {
@@ -501,6 +613,29 @@ func (s *Sim) Step(dt float64) {
 
 	// --- Win / draw detection ---
 	s.checkEnd()
+}
+
+// stepBurns applies Dragon Fire damage over time and expires burns whose
+// duration has elapsed.
+func (s *Sim) stepBurns(dt float64) {
+	for i := 0; i < len(s.burns); {
+		b := &s.burns[i]
+		if s.Time >= b.Until {
+			s.burns = append(s.burns[:i], s.burns[i+1:]...)
+			continue
+		}
+		b.TickIn -= dt
+		for b.TickIn <= timerEpsilon {
+			for _, u := range s.units {
+				if u.Side != b.Side && u.Lane == b.Lane && u.HP > 0 {
+					s.dealDamage(b.Side, u, b.TickDamage)
+				}
+			}
+			s.fx = append(s.fx, FxEvent{Kind: "burn", Side: b.Side, Lane: b.Lane, Slot: -1})
+			b.TickIn += b.Interval
+		}
+		i++
+	}
 }
 
 // stepCaches spawns, ages and collects supply caches.
@@ -598,7 +733,11 @@ func (s *Sim) stepUnits(dt float64) {
 		switch t := target.(type) {
 		case *Unit:
 			if u.Cooldown <= 0 {
-				s.dealDamage(u.Side, t, u.Damage)
+				if ub.Splash > 0 {
+					s.splashDamage(u.Side, u.Lane, t.X, ub.Splash, u.Damage)
+				} else {
+					s.dealDamage(u.Side, t, u.Damage)
+				}
 				u.Cooldown = s.cfg.Units[u.Type].AttackInterval
 				s.emitAttackFx(u, t.X)
 			}
@@ -651,6 +790,19 @@ func (s *Sim) findTarget(u *Unit) any {
 	}
 }
 
+// splashDamage hits every enemy unit in the lane within radius of centerX.
+// Used by fire-breathing dragons; the primary target is included.
+func (s *Sim) splashDamage(side, lane int, centerX, radius, dmg float64) {
+	for _, u := range s.units {
+		if u.Side == side || u.Lane != lane || u.HP <= 0 {
+			continue
+		}
+		if absDist(u.X, centerX) <= radius {
+			s.dealDamage(side, u, dmg)
+		}
+	}
+}
+
 func (s *Sim) nearestEnemyUnit(u *Unit, maxRange float64) *Unit {
 	var best *Unit
 	var bestD float64 = math.Inf(1)
@@ -692,6 +844,9 @@ func (s *Sim) nearestEnemyDist(u *Unit) (float64, bool) {
 		if e.Side == u.Side || e.Lane != u.Lane || e.HP <= 0 {
 			continue
 		}
+		if s.cfg.Units[e.Type].Flying {
+			continue // flyers don't force siege engines to hold position
+		}
 		if dd := absDist(u.X, e.X); dd < d {
 			d, found = dd, true
 		}
@@ -712,10 +867,10 @@ func (s *Sim) nearestEnemyDist(u *Unit) (float64, bool) {
 }
 
 // emitAttackFx records a cosmetic shot/melee event for clients to render.
-// Bowman and siege units fire projectiles; everything else is a melee swing.
+// Bowman, dragon and siege units fire projectiles; everything else is a melee swing.
 func (s *Sim) emitAttackFx(u *Unit, targetX float64) {
 	kind := "melee"
-	if u.Type == Bowman || u.Type == Siege {
+	if u.Type == Bowman || u.Type == Siege || u.Type == Dragon {
 		kind = "shot"
 	}
 	s.fx = append(s.fx, FxEvent{Kind: kind, Unit: string(u.Type), Side: u.Side, Lane: u.Lane, FromX: u.X, ToX: targetX, Slot: -1})
@@ -731,9 +886,10 @@ func (s *Sim) stepTurrets(dt float64) {
 				}
 				t.Cooldown -= dt
 
-				// Revalidate the focused target: must be alive, in lane, in range.
+				// Revalidate the focused target: must be alive, in lane, in range,
+				// and not flying (turrets cannot target flyers).
 				target := s.unitByID(t.TargetID)
-				if target != nil && (target.Side == side || target.Lane != lane || absDist(target.X, t.X) > s.cfg.Turret.Range || target.HP <= 0) {
+				if target != nil && (target.Side == side || target.Lane != lane || absDist(target.X, t.X) > s.cfg.Turret.Range || target.HP <= 0 || s.cfg.Units[target.Type].Flying) {
 					target = nil
 					t.TargetID = 0
 				}
@@ -763,6 +919,9 @@ func (s *Sim) pickTurretTarget(t *Turret, side, lane int) *Unit {
 	for _, u := range s.units {
 		if u.Side == side || u.Lane != lane || u.HP <= 0 {
 			continue
+		}
+		if s.cfg.Units[u.Type].Flying {
+			continue // turrets cannot hit flyers
 		}
 		if absDist(u.X, t.X) > s.cfg.Turret.Range {
 			continue

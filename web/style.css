@@ -549,3 +549,66 @@ html, body {
 @media (max-width: 640px) {
   .emote-bar { display: none; } /* too crowded; chat still works via feed on desktop */
 }
+
+/* ======= Coupons (Dragon unlock) ======= */
+.coupon-box {
+  margin-top: 14px; padding: 12px 12px 10px;
+  border: 1px dashed rgba(251, 191, 36, .45); border-radius: 12px;
+  background: linear-gradient(180deg, rgba(251,191,36,.06), rgba(251,191,36,.02));
+}
+.coupon-title { font-size: 12px; font-weight: 800; letter-spacing: .08em; color: #fde68a; text-transform: uppercase; margin-bottom: 6px; }
+.coupon-row { display: flex; gap: 8px; }
+.coupon-input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: 9px;
+  border: 1px solid var(--line); background: var(--panel-2); color: #fef3c7;
+  font-family: ui-monospace, Consolas, monospace; font-size: 13px; letter-spacing: .08em;
+  text-transform: uppercase; outline: none;
+}
+.coupon-input:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(251,191,36,.18); }
+.coupon-status { min-height: 18px; margin: 6px 2px 0; font-size: 12px; color: var(--muted); }
+.coupon-status.ok { color: #fde68a; }
+.coupon-status.err { color: var(--bad); }
+
+/* In-match badge next to the side badge */
+.coupon-badge {
+  font-size: 11px; font-weight: 800; letter-spacing: .08em;
+  padding: 5px 10px; border-radius: 999px;
+  color: #422006; background: linear-gradient(180deg, #fde047, #f59e0b);
+  box-shadow: 0 0 12px rgba(251, 191, 36, .45);
+  white-space: nowrap;
+}
+
+/* Dragon shop item */
+.shop-item.dragon-item {
+  border-color: rgba(251, 191, 36, .65);
+  background: linear-gradient(160deg, rgba(251,191,36,.16), rgba(124,58,237,.16));
+  box-shadow: 0 0 0 1px rgba(251,191,36,.35), 0 6px 18px rgba(251,191,36,.12);
+}
+.shop-item.dragon-item:hover { border-color: #fde047; }
+.shop-item.dragon-item .si-name { color: #fde68a; }
+
+/* Coupon unlock panel (Dragon's Arsenal) */
+.coupon-panel { border-color: rgba(251,191,36,.35); }
+.coupon-expiry { margin: -2px 0 8px; font-size: 11px; color: #fcd34d; }
+.ability-list { display: flex; flex-direction: column; gap: 8px; }
+.ability-btn {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  background: linear-gradient(180deg, var(--panel-2), var(--panel-3));
+  border: 1px solid rgba(251,191,36,.35); border-radius: 11px;
+  padding: 8px 10px; color: var(--text); font-family: inherit;
+  position: relative; transition: border-color .15s, transform .12s;
+}
+.ability-btn:hover:not(:disabled) { border-color: #fde047; transform: translateY(-1px); }
+.ability-btn.selected { border-color: #fde047; box-shadow: 0 0 0 2px rgba(253,224,71,.4), 0 6px 16px rgba(251,191,36,.15); }
+.ability-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ability-btn .ab-head { display: flex; align-items: center; gap: 8px; }
+.ability-btn .ab-icon { font-size: 17px; }
+.ability-btn .ab-name { font-weight: 800; font-size: 13px; letter-spacing: .02em; color: #fde68a; flex: 1; }
+.ability-btn .ab-cost { font-weight: 800; font-size: 12px; color: #fef08a; background: rgba(251,191,36,.12); border: 1px solid rgba(251,191,36,.35); border-radius: 6px; padding: 2px 6px; }
+.ability-btn .ab-desc { display: block; margin: 5px 0 0; font-size: 10.5px; line-height: 1.35; color: var(--muted); }
+.ability-btn .ab-cooldown { display: block; margin-top: 4px; font-size: 10px; font-weight: 700; letter-spacing: .05em; color: #fdba74; min-height: 13px; }
+.ability-btn .ab-cooldown.ready { color: #86efac; }
+
+/* Coupon feed lines */
+.feed li.rockslide { color: #fdba74; border-color: #f97316; font-weight: 700; }
+.feed li.dragonfire { color: #fda4af; border-color: #ef4444; font-weight: 700; }

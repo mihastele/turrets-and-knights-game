@@ -8,10 +8,14 @@
 //
 // Flags / environment:
 //
-//	-addr   listen address (default: ":8180", or ":"+$PORT when PORT is set,
-//	        e.g. on Fly.io / Render / Heroku-style platforms)
-//	-web    serve the client from this directory instead of the embedded FS
-//	        (useful for editing the client without recompiling)
+//	-addr        listen address (default: ":8180", or ":"+$PORT when PORT is set,
+//	             e.g. on Fly.io / Render / Heroku-style platforms)
+//	-web         serve the client from this directory instead of the embedded
+//	             assets (useful for editing the client without recompiling)
+//	-admin-token bearer token for the coupon admin API (or $LANESIEGE_ADMIN_TOKEN);
+//	             empty disables the admin API
+//	-coupons     path of the coupon store JSON file (or $LANESIEGE_COUPONS_FILE);
+//	             default "coupons.json"; the file is created on first write
 package main
 
 import (
@@ -25,12 +29,22 @@ import (
 	"syscall"
 
 	lanesiege "lanesiege"
+	"lanesiege/internal/coupons"
 	"lanesiege/internal/server"
 )
+
+func envOr(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
 
 func main() {
 	addr := flag.String("addr", "", "listen address (overrides $PORT; default :8180)")
 	web := flag.String("web", "", "serve client from this directory instead of the embedded assets")
+	adminToken := flag.String("admin-token", os.Getenv("LANESIEGE_ADMIN_TOKEN"), "bearer token for the coupon admin API (env LANESIEGE_ADMIN_TOKEN); empty disables it")
+	couponsPath := flag.String("coupons", envOr("LANESIEGE_COUPONS_FILE", "coupons.json"), "path of the coupon store file (env LANESIEGE_COUPONS_FILE)")
 	flag.Parse()
 
 	listen := *addr
@@ -54,7 +68,21 @@ func main() {
 		webFS = sub
 	}
 
-	srv := server.New(webFS)
+	couponStore, err := coupons.Load(*couponsPath)
+	if err != nil {
+		log.Fatalf("loading coupons from %s: %v", *couponsPath, err)
+	}
+	log.Printf("coupon store: %s", *couponsPath)
+	if *adminToken == "" {
+		log.Printf("coupon admin API disabled (no -admin-token / LANESIEGE_ADMIN_TOKEN)")
+	} else {
+		log.Printf("coupon admin API enabled at /api/admin/coupons")
+	}
+
+	srv := server.NewWithOptions(webFS, server.Options{
+		Coupons:    couponStore,
+		AdminToken: *adminToken,
+	})
 
 	// Graceful shutdown on Ctrl+C / SIGTERM (docker stop, systemd stop, …).
 	go func() {

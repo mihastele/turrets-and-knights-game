@@ -27,6 +27,15 @@
         </form>
       </div>
 
+      <div class="coupon-box">
+        <div class="coupon-title">🎟️ Have a coupon?</div>
+        <form id="coupon-form" class="coupon-row" autocomplete="off">
+          <input id="coupon-code" class="coupon-input" placeholder="DRGN-XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="19">
+          <button type="submit" class="btn btn-secondary btn-small">Redeem</button>
+        </form>
+        <p id="coupon-status" class="coupon-status"></p>
+      </div>
+
       <p id="lobby-error" class="lobby-error"></p>
 
       <div class="howto">
@@ -37,6 +46,7 @@
           <li>You start with <b>100 coins</b>, get <b>+10 every 5s</b>, plus a shared windfall of 5–10 every 12–20s.</li>
           <li>A <b>factory</b> (+5/5s) pays off in 55s — greedily building too early opens you to an early rush.</li>
           <li>At <b>6:00</b> overtime starts: no new turrets, turrets lose 15% damage every 30s. At <b>10:00</b> the match is a draw.</li>
+          <li>Got a <b>coupon</b>? Redeem it below the room buttons to unlock the <b>Dragon</b> and lane-wide field effects.</li>
         </ul>
       </div>
     </div>
@@ -52,6 +62,7 @@
           <button id="btn-copy" class="copy-btn" title="Copy room code">⧉</button>
         </div>
         <div id="side-badge" class="side-badge">—</div>
+        <div id="coupon-badge" class="coupon-badge hidden" title="Coupon unlocks active">🐉 DRAGON</div>
       </div>
 
       <div class="tb-group tb-center">
@@ -127,6 +138,23 @@
           <h3 class="panel-title">Deploy <span class="panel-hint">click a lane to send</span></h3>
           <div id="shop" class="shop-grid"></div>
           <p id="selection-hint" class="selection-hint">Select a unit, then click a lane. Right-click / Esc to cancel.</p>
+        </section>
+
+        <section class="panel coupon-panel hidden" id="coupon-panel">
+          <h3 class="panel-title">🐉 Dragon's Arsenal <span class="panel-hint">coupon unlock</span></h3>
+          <p class="coupon-expiry" id="coupon-expiry"></p>
+          <div class="ability-list">
+            <button class="ability-btn" id="ability-rockslide" data-effect="rockslide">
+              <span class="ab-head"><span class="ab-icon">🪨</span><span class="ab-name">Rockslide</span><span class="ab-cost" id="ability-rockslide-cost">50c</span></span>
+              <span class="ab-desc">Rockfall crushes every ground enemy in a lane. Flyers dodge.</span>
+              <span class="ab-cooldown" id="cooldown-rockslide"></span>
+            </button>
+            <button class="ability-btn" id="ability-dragonfire" data-effect="dragonfire">
+              <span class="ab-head"><span class="ab-icon">🔥</span><span class="ab-name">Dragon Fire</span><span class="ab-cost" id="ability-dragonfire-cost">80c</span></span>
+              <span class="ab-desc">Set a lane ablaze — burning ground sears everything inside.</span>
+              <span class="ab-cooldown" id="cooldown-dragonfire"></span>
+            </button>
+          </div>
         </section>
 
         <section class="panel">
