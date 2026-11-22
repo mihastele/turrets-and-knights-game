@@ -32,12 +32,16 @@ html, body {
 /* ============ Lobby ============ */
 #screen-lobby {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
+  padding-block: 16px;
   overflow: auto;
 }
 
 .lobby-card {
+  flex: none;
+  margin-block: auto;
   width: min(520px, 92vw);
   background: linear-gradient(180deg, var(--panel) 0%, #10152b 100%);
   border: 1px solid var(--line);
