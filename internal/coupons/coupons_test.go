@@ -47,12 +47,14 @@ func TestMaxUses(t *testing.T) {
 	if _, err := s.Redeem(c.Code, "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Redeem(c.Code, "bob"); !errors.Is(err, ErrExhausted) {
-		t.Fatalf("second distinct redeem: want ErrExhausted, got %v", err)
+	if err := s.StartUses([]string{c.Code}); err != nil {
+		t.Fatal(err)
 	}
-	// Alice can still re-validate her own coupon.
-	if _, err := s.Redeem(c.Code, "alice"); err != nil {
-		t.Fatalf("same-player re-redeem should succeed: %v", err)
+	if err := s.StartUses([]string{c.Code}); !errors.Is(err, ErrExhausted) {
+		t.Fatalf("second match: want ErrExhausted, got %v", err)
+	}
+	if !s.AnyValid([]string{c.Code}) {
+		t.Fatal("final match should retain entitlement")
 	}
 }
 
@@ -76,6 +78,38 @@ func TestExpiry(t *testing.T) {
 	}
 	if st := s.Status(c.Code); st.Valid || st.Reason != "expired" {
 		t.Fatalf("status: %+v", st)
+	}
+}
+
+func TestPurgeExpiredPersistsAndKeepsValidCoupons(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "coupons.json")
+	s, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	s.now = func() time.Time { return now }
+	expired, err := s.Create("short", time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := s.Create("long", 3*time.Hour, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.now = func() time.Time { return now.Add(2 * time.Hour) }
+	if err := s.PurgeExpired(); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reloaded.List()) != 1 || reloaded.List()[0].Code != valid.Code {
+		t.Fatalf("unexpected persisted coupons: %+v", reloaded.List())
+	}
+	if reloaded.Status(expired.Code).Reason != "unknown" {
+		t.Fatal("expired coupon persisted")
 	}
 }
 

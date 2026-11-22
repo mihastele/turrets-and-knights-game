@@ -108,7 +108,7 @@ func TestAdminCouponLifecycleAndRoomEntitlement(t *testing.T) {
 	roomCode, _ := room["code"].(string)
 	token, _ := room["token"].(string)
 
-	// The websocket hello carries the entitlement too.
+	// Entitlement is assigned when both players start the match.
 	ws := dialWS(t, strings.TrimPrefix(base, "http://"), roomCode, token)
 	defer ws.Close()
 	hello := readMsg(t, ws, 3*time.Second)
@@ -116,7 +116,7 @@ func TestAdminCouponLifecycleAndRoomEntitlement(t *testing.T) {
 		t.Fatalf("first message = %v, want hello", hello["type"])
 	}
 	coupon, _ := hello["coupon"].(map[string]any)
-	if coupon == nil || coupon["entitled"] != true {
+	if coupon == nil || coupon["entitled"] != false {
 		t.Fatalf("hello coupon payload wrong: %v", hello["coupon"])
 	}
 
@@ -139,6 +139,71 @@ func TestRedeemUnknownCoupon(t *testing.T) {
 	})
 	if code != http.StatusNotFound {
 		t.Fatalf("got %d (%v), want 404", code, resp)
+	}
+}
+
+func TestFinalCouponUseAndRematch(t *testing.T) {
+	base := "http://" + startTestServer(t)
+	host := strings.TrimPrefix(base, "http://")
+	_, created := httpJSON(t, "POST", base+"/api/admin/coupons", "test-admin-token", map[string]any{"label": "final use", "maxUses": 1})
+	code := created["code"].(string)
+	_, room := httpJSON(t, "POST", base+"/api/rooms", "", map[string]any{"coupons": []string{code}})
+	roomCode := room["code"].(string)
+	_, join := httpJSON(t, "POST", base+"/api/rooms/"+roomCode+"/join", "", map[string]any{})
+	a := dialWS(t, host, roomCode, room["token"].(string))
+	defer a.Close()
+	b := dialWS(t, host, roomCode, join["token"].(string))
+	defer b.Close()
+	var update map[string]any
+	for update == nil {
+		m := readMsg(t, a, 3*time.Second)
+		if m["type"] == "couponUpdate" {
+			update = m
+		}
+	}
+	if update["exhaustedCode"] != strings.ReplaceAll(code, "-", "") {
+		t.Fatalf("missing exhausted code: %v", update)
+	}
+	if update["coupon"].(map[string]any)["entitled"] != true {
+		t.Fatalf("final use lost entitlement: %v", update)
+	}
+	if err := a.WriteJSON(map[string]any{"type": "resign"}); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		m := readMsg(t, a, 3*time.Second)
+		if m["type"] == "snapshot" && m["finished"] == true {
+			break
+		}
+	}
+	_ = a.WriteJSON(map[string]any{"type": "rematch"})
+	_ = b.WriteJSON(map[string]any{"type": "rematch"})
+	for {
+		m := readMsg(t, a, 3*time.Second)
+		if m["type"] == "couponUpdate" {
+			if m["coupon"].(map[string]any)["entitled"] != false {
+				t.Fatalf("rematch reused coupon: %v", m)
+			}
+		}
+		if m["type"] == "matchReset" {
+			break
+		}
+	}
+}
+
+func TestWithoutCouponClearsRoomList(t *testing.T) {
+	s := NewWithOptions(os.DirFS("../../web"), Options{})
+	defer s.Close()
+	p := &player{seat: 0, coupons: []string{"DRGN-AAAA-BBBB"}}
+	rm := &room{code: "TEST", state: "waiting", players: [2]*player{p, nil}}
+	s.mu.Lock()
+	s.rooms[rm.code] = rm
+	s.mu.Unlock()
+	s.handleClientMsg(rm.code, p, nil, clientMsg{Type: "withoutCoupon"})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(p.coupons) != 0 || !p.withoutCoupon {
+		t.Fatalf("coupon list was not cleared: %+v", p)
 	}
 }
 

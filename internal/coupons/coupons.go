@@ -175,7 +175,7 @@ func (s *Store) Create(label string, validFor time.Duration, maxUses int) (*Coup
 			}
 			return sb.String()
 		}
-		// 8 random alphabet chars -> DRGN-XXXX-XXXX
+		// Twelve random characters form three groups after the prefix.
 		code = "DRGN-" + part(0) + "-" + part(4) + "-" + part(8)
 		if _, exists := s.coupons[code]; !exists {
 			break

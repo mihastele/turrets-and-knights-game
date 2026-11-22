@@ -225,6 +225,7 @@ func (s *Server) parseLobbyIdentity(r *http.Request) lobbyIdentity {
 		Lives    *int     `json:"lives"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
+		id.invalidLives = true
 		return id
 	}
 	id.playerID = normalizePlayerID(raw.PlayerID)

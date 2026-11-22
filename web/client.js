@@ -332,7 +332,16 @@ const CouponStore = {
     }
   },
   clear() { try { localStorage.removeItem(COUPON_KEY); } catch {} },
+  remove(code) {
+    const normalized = code.replace(/[ -]/g, '').toUpperCase();
+    const remaining = this.load().filter(c => c.replace(/[ -]/g, '').toUpperCase() !== normalized);
+    try { if (remaining.length) localStorage.setItem(COUPON_KEY, JSON.stringify(remaining)); else this.clear(); } catch {}
+  },
 };
+
+function updateCouponRemoveButton() {
+  $('coupon-remove').classList.toggle('hidden', CouponStore.load().length === 0);
+}
 
 function couponPayload() {
   return { playerId: playerId(), coupons: CouponStore.load() };
@@ -347,6 +356,8 @@ function fmtExpiry(iso) {
 }
 
 async function refreshCouponStatus() {
+  updateCouponRemoveButton();
+  if (state.coupon && state.coupon.expiresAt && Date.now() >= Date.parse(state.coupon.expiresAt)) applyCouponFromHello(null);
   const codes = CouponStore.load();
   if (!codes.length) {
     if (els.couponStatus) els.couponStatus.textContent = '';
@@ -354,10 +365,12 @@ async function refreshCouponStatus() {
   }
   try {
     const res = await api('/api/coupons/status', { codes });
-    const dead = new Set((res.coupons || []).filter(c => !c.valid && !(c.reason === 'exhausted' && state.coupon && c.code.replace(/[ -]/g, '').toUpperCase() === state.coupon.code.replace(/[ -]/g, '').toUpperCase())).map(c => c.code.replace(/[ -]/g, '').toUpperCase()));
+    const dead = new Set((res.coupons || []).filter(c => !c.valid).map(c => c.code.replace(/[ -]/g, '').toUpperCase()));
     const kept = CouponStore.load().filter(c => !dead.has(c.replace(/[ -]/g, '').toUpperCase()));
     try { localStorage.setItem(COUPON_KEY, JSON.stringify(kept)); } catch {}
-    if (state.coupon && dead.has(state.coupon.code.replace(/[ -]/g, '').toUpperCase())) applyCouponFromHello(null);
+    updateCouponRemoveButton();
+    if (state.coupon && (res.coupons || []).some(c => c.reason !== 'exhausted' && !c.valid && c.code.replace(/[ -]/g, '').toUpperCase() === state.coupon.code.replace(/[ -]/g, '').toUpperCase())) applyCouponFromHello(null);
+    if (!CouponStore.load().length && !dead.size) { els.couponStatus.textContent = ''; return; }
     if (res.entitled && res.active) {
       els.couponStatus.textContent = `🐉 ${res.active.label || 'Coupon'} unlocked — Dragon + field effects · until ${fmtExpiry(res.active.expiresAt)}`;
       els.couponStatus.className = 'coupon-status ok';
@@ -542,8 +555,10 @@ function handleServerMessage(msg) {
       break;
     case 'couponUpdate':
       applyCouponFromHello(msg.coupon);
+      if (msg.exhaustedCode) { CouponStore.remove(msg.exhaustedCode); updateCouponRemoveButton(); }
       break;
     case 'couponWait':
+      els.gameover.classList.add('hidden');
       els.waiting.classList.remove('hidden');
       $('coupon-wait-message').textContent = msg.message;
       $('btn-without-coupon').classList.remove('hidden');
@@ -788,6 +803,8 @@ function resetForRematch() {
   fx.hpCache.clear();
   fx.shake = 0;
   els.gameover.classList.add('hidden');
+  els.waiting.classList.add('hidden');
+  $('btn-without-coupon').classList.add('hidden');
   els.feed.innerHTML = '';
   els.shop.querySelectorAll('.shop-item').forEach((b) => { b.disabled = false; });
   els.turretUpgrades.querySelectorAll('button').forEach((b) => { b.disabled = false; });
@@ -2078,7 +2095,17 @@ function laneFromEvent(ev) {
 $('btn-create').addEventListener('click', onCreate);
 $('join-form').addEventListener('submit', onJoin);
 $('btn-quit').addEventListener('click', backToMenu);
-$('btn-without-coupon').addEventListener('click', () => { send({ type: 'withoutCoupon' }); $('btn-without-coupon').classList.add('hidden'); });
+$('btn-without-coupon').addEventListener('click', () => {
+  if (!send({ type: 'withoutCoupon' })) return;
+  CouponStore.clear();
+  updateCouponRemoveButton();
+  $('btn-without-coupon').classList.add('hidden');
+});
+$('coupon-remove').addEventListener('click', () => {
+  CouponStore.clear();
+  updateCouponRemoveButton();
+  els.couponStatus.textContent = '';
+});
 $('btn-back-menu').addEventListener('click', backToMenu);
 $('btn-rematch').addEventListener('click', () => {
   if (state.rematchPending) return;

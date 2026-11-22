@@ -159,6 +159,7 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 	if msg.Type == "withoutCoupon" {
 		if rm.state == "waiting" {
 			pl.withoutCoupon = true
+			pl.coupons = nil
 		}
 		return
 	}
@@ -280,6 +281,14 @@ func (s *Server) tickAll() {
 		if rm.state != "playing" || rm.game == nil {
 			continue
 		}
+		for _, p := range rm.players {
+			if p != nil && p.activeCoupon != "" && !s.playerEntitled(p) {
+				p.activeCoupon = ""
+				if p.conn != nil {
+					s.sendToLocked(p.conn, map[string]any{"type": "couponUpdate", "coupon": s.couponHello(p)})
+				}
+			}
+		}
 		rm.game.Step(sim.TickDT)
 		rm.snapEvery++
 		if rm.game.Finished {
@@ -374,7 +383,18 @@ func (s *Server) tryStartLocked(rm *room) {
 	}
 	for i, p := range rm.players {
 		p.activeCoupon = chosen[i]
-		s.sendToLocked(p.conn, map[string]any{"type": "couponUpdate", "coupon": s.couponHello(p)})
+		var exhausted string
+		if chosen[i] != "" && s.coupons.Status(chosen[i]).Reason == "exhausted" {
+			exhausted = chosen[i]
+			remaining := p.coupons[:0]
+			for _, code := range p.coupons {
+				if coupons.Normalize(code) != exhausted {
+					remaining = append(remaining, code)
+				}
+			}
+			p.coupons = remaining
+		}
+		s.sendToLocked(p.conn, map[string]any{"type": "couponUpdate", "coupon": s.couponHello(p), "exhaustedCode": exhausted})
 	}
 	rm.state = "playing"
 	if rematch {

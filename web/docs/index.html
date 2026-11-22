@@ -2,6 +2,8 @@
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Coupon guide</title><link rel="stylesheet" href="/style.css"></head><body><main class="lobby-card">
 <h1>Coupon guide</h1><p><a href="/">Back to game</a></p>
 <p>Support the game at <a href="https://buymeacoffee.com/mihastele">Buy Me a Coffee</a>. The admin will send your coupon privately. Redeem it in the lobby to unlock the Dragon, its upgrades, Rockslide and Dragon Fire until it expires.</p>
+<p>New coupons have the form DRGN-XXXX-XXXX-XXXX. Existing shorter coupons remain valid. Remove saved coupons from the lobby with Remove saved coupons. Selecting Play without coupon also removes saved coupons from this browser.</p>
+<p>Each match start uses one coupon use. The final use remains active for that match and is removed from this browser. Expired coupons are removed from the server store and browser.</p>
 <h2>Create a coupon in Postman</h2><ol><li>Set LANESIEGE_ADMIN_TOKEN and start the server.</li><li>Create a POST request to http://localhost:8180/api/admin/coupons.</li><li>Choose Bearer Token under Authorization and enter the admin token.</li><li>Choose raw JSON under Body and send the example below.</li></ol>
 <pre>{"label":"Supporter coupon","validDays":30,"maxUses":10}</pre>
 <p>The 201 response contains the coupon code. Send it privately. validDays counts 24-hour periods from creation and accepts 1–3650. Omitted or zero defaults to 30 days. maxUses defaults to 10 match starts and zero means unlimited match starts.</p><p>Use GET /api/admin/coupons to list codes and POST /api/admin/coupons/{code}/revoke to revoke a code. Both require the bearer token.</p></main></body></html>

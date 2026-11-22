@@ -15,7 +15,7 @@
       <div class="logo">
         <div class="logo-icon">⚔️</div>
         <h1>LANE&nbsp;SIEGE</h1>
-        <p class="tagline">Five lanes. Two commanders. One breach.</p>
+        <p class="tagline">Five lanes. Two commanders. Battle for the breach.</p>
       </div>
 
       <div class="lobby-actions">
@@ -36,6 +36,7 @@
           <input id="coupon-code" class="coupon-input" placeholder="DRGN-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="19">
           <button type="submit" class="btn btn-secondary btn-small">Redeem</button>
         </form>
+        <button id="coupon-remove" class="btn btn-secondary btn-small hidden" type="button">Remove saved coupons</button>
         <p id="coupon-status" class="coupon-status"></p>
       </div>
 
@@ -45,9 +46,9 @@
         <h3>How it works</h3>
         <ul>
           <li>Both commanders spend coins on <b>troops, turrets and factories</b>.</li>
-          <li>Troops march lane by lane. Break through the enemy <b>breach line</b> to win.</li>
+          <li>Each troop that crosses the enemy <b>breach line</b> takes one life. Choose 1–10 lives when creating a room.</li>
           <li>You start with <b>100 coins</b>, get <b>+10 every 5s</b>, plus a shared windfall of 5–10 every 12–20s.</li>
-          <li>A <b>factory</b> (+5/5s) pays off in 55s — greedily building too early opens you to an early rush.</li>
+          <li>A <b>factory</b> adds +5 coins every 5s. Upgrade it twice to earn up to +15.</li>
           <li>At <b>6:00</b> overtime starts: no new turrets, turrets lose 15% damage every 30s. At <b>10:00</b> the match is a draw.</li>
           <li>Got a <b>coupon</b>? Redeem it below the room buttons to unlock the <b>Dragon</b> and lane-wide field effects.</li>
         </ul>

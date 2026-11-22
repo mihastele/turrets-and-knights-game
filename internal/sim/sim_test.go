@@ -140,6 +140,40 @@ func TestFactoryOnlyOne(t *testing.T) {
 	}
 }
 
+func TestFactoryUpgradesAndIncome(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 1000)
+	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); err != nil {
+		t.Fatal(err)
+	}
+	for level, want := range []int{20, 25} {
+		if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); err != nil {
+			t.Fatal(err)
+		}
+		if got := s.players[SideA].IncomePerInterval(s.cfg); got != want {
+			t.Fatalf("upgrade %d income = %d, want %d", level+1, got, want)
+		}
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); !errors.Is(err, ErrMaxLevel) {
+		t.Fatalf("want max level, got %v", err)
+	}
+}
+
+func TestMultipleLivesAndSimultaneousElimination(t *testing.T) {
+	s := newTestSim(t)
+	s.SetLives(3)
+	s.units = []*Unit{{Side: SideA, Lane: 0, X: FieldLength, HP: 1}, {Side: SideA, Lane: 1, X: FieldLength, HP: 1}}
+	s.checkEnd()
+	if s.Finished || s.players[SideB].Lives != 1 || len(s.units) != 0 {
+		t.Fatalf("unexpected first breach: %+v", s.Snapshot())
+	}
+	s.units = []*Unit{{Side: SideA, Lane: 0, X: FieldLength, HP: 1}, {Side: SideB, Lane: 0, X: 0, HP: 1}, {Side: SideB, Lane: 1, X: 0, HP: 1}, {Side: SideB, Lane: 2, X: 0, HP: 1}}
+	s.checkEnd()
+	if !s.Finished || !s.Draw {
+		t.Fatal("simultaneous elimination should draw")
+	}
+}
+
 func TestIncomeTicksEveryFiveSeconds(t *testing.T) {
 	s := newTestSim(t)
 	step(s, 5.0)

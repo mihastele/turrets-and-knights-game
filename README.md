@@ -17,7 +17,7 @@ In Postman create a POST request to `http://localhost:8180/api/admin/coupons`. S
 {"label":"Supporter coupon","validDays":30,"maxUses":10}
 ```
 
-The 201 response contains the code to send privately. `validDays` accepts 1–3650 days from creation and defaults to 30 when omitted or zero. `maxUses` zero permits unlimited redemptions. Use `GET /api/admin/coupons` to list codes and `POST /api/admin/coupons/{code}/revoke` to revoke one, with the same bearer token.
+The 201 response contains the code to send privately. New codes use the form `DRGN-XXXX-XXXX-XXXX`, and existing shorter codes remain valid. `validDays` accepts 1–3650 days from creation and defaults to 30 when omitted or zero. `maxUses` counts match starts, and zero permits unlimited starts. Players can remove saved coupons in the lobby. Use `GET /api/admin/coupons` to list codes and `POST /api/admin/coupons/{code}/revoke` to revoke one, with the same bearer token.
 
 A head-to-head lane siege for two players. Plants vs. Zombies meets a
 headline-fight: five lanes, two commanders, one breach. Build an economy,
