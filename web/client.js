@@ -354,13 +354,15 @@ async function refreshCouponStatus() {
   }
   try {
     const res = await api('/api/coupons/status', { codes });
+    const dead = new Set((res.coupons || []).filter(c => !c.valid && !(c.reason === 'exhausted' && state.coupon && c.code.replace(/[ -]/g, '').toUpperCase() === state.coupon.code.replace(/[ -]/g, '').toUpperCase())).map(c => c.code.replace(/[ -]/g, '').toUpperCase()));
+    const kept = CouponStore.load().filter(c => !dead.has(c.replace(/[ -]/g, '').toUpperCase()));
+    try { localStorage.setItem(COUPON_KEY, JSON.stringify(kept)); } catch {}
+    if (state.coupon && dead.has(state.coupon.code.replace(/[ -]/g, '').toUpperCase())) applyCouponFromHello(null);
     if (res.entitled && res.active) {
       els.couponStatus.textContent = `🐉 ${res.active.label || 'Coupon'} unlocked — Dragon + field effects · until ${fmtExpiry(res.active.expiresAt)}`;
       els.couponStatus.className = 'coupon-status ok';
     } else {
       // Prune dead codes so a fresh redeem isn't blocked by stale entries.
-      const dead = (res.coupons || []).filter(c => !c.valid).map(c => c.code);
-      if (dead.length === codes.length) CouponStore.clear();
       const first = (res.coupons || [])[0];
       const why = first && first.reason ? first.reason : 'unknown';
       els.couponStatus.textContent = `Coupon not active (${why}). Ask your admin for a new one.`;
@@ -686,6 +688,8 @@ function updateEconomyHUD(snap) {
   const foe = snap.players[otherSeat()];
   els.coinsYou.textContent = you.coins;
   els.coinsFoe.textContent = foe.coins;
+  $('lives-you').textContent = `♥ ${you.lives}`;
+  $('lives-foe').textContent = `♥ ${foe.lives}`;
   els.incomeYou.textContent = `+${you.income}/5s${you.factory ? ' 🏭' : ''}`;
   els.incomeFoe.textContent = `+${foe.income}/5s${foe.factory ? ' 🏭' : ''}`;
   refreshAffordability(you.coins);
@@ -835,7 +839,7 @@ function buildShop() {
     '<span class="si-key">7</span>' +
     '<div class="si-top"><span class="si-name">Coin Factory</span><span class="si-cost">' + fac.factoryCost + 'c</span></div>' +
     '<div class="si-role">+' + fac.factoryIncome + ' coins every 5s (payback ≈ ' + fac.factoryPayback + 's). One per player.</div>';
-  facBtn.addEventListener('click', () => { SFX.click(); send({ type: 'factory' }); });
+  facBtn.addEventListener('click', () => { SFX.click(); send({ type: state.snapNow?.players[state.seat].factory ? 'upgradeFactory' : 'factory' }); });
   els.shop.appendChild(facBtn);
 }
 
@@ -948,8 +952,11 @@ function updateTurretButtons(snap) {
     });
   });
   els.shop.querySelectorAll('[data-factory]').forEach((btn) => {
-    btn.disabled = state.over || you.factory || you.coins < b.economy.factoryCost;
-    if (you.factory) btn.querySelector('.si-role').textContent = 'Built ✓ (+5 coins every 5s)';
+    const level = you.factoryLevel || 0;
+    const cost = you.factory ? [75, 125][level] : b.economy.factoryCost;
+    btn.disabled = state.over || (you.factory && level >= 2) || you.coins < cost;
+    btn.querySelector('.si-cost').textContent = you.factory && level >= 2 ? 'MAX' : cost + 'c';
+    if (you.factory) btn.querySelector('.si-role').textContent = `+${5 * (level + 1)} coins every 5s${level < 2 ? ' · Upgrade for +5' : ' · Maximum level'}`;
   });
 }
 
@@ -1966,7 +1973,7 @@ async function onCreate() {
   els.lobbyError.textContent = '';
   SFX.click();
   try {
-    const res = await api('/api/rooms', couponPayload());
+    const res = await api('/api/rooms', { ...couponPayload(), lives: Number($('room-lives').value) });
     await enterGame(res.code, res.token, res.seat);
   } catch (e) {
     els.lobbyError.textContent = e.message;
@@ -2196,7 +2203,7 @@ window.addEventListener('keydown', (ev) => {
   const unit = HOTKEYS[ev.key];
   if (!unit) return;
   SFX.unlock();
-  if (unit === 'factory') { send({ type: 'factory' }); return; }
+  if (unit === 'factory') { send({ type: state.snapNow?.players[state.seat].factory ? 'upgradeFactory' : 'factory' }); return; }
   if (unit === 'turret') { selectTurret(); return; }
   SFX.click();
   selectUnit(unit);
@@ -2208,5 +2215,7 @@ document.addEventListener('pointerdown', () => SFX.unlock(), { once: true });
 // boot
 els.muteBtn.textContent = SFX.isMuted() ? '🔇' : '🔊';
 refreshCouponStatus();
+setInterval(refreshCouponStatus, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshCouponStatus(); });
 requestAnimationFrame(draw);
 tryResume();

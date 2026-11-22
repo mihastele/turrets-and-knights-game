@@ -49,6 +49,7 @@ type wsConn struct {
 
 type room struct {
 	code      string
+	lives     int
 	players   [2]*player
 	game      *sim.Sim
 	state     string // "waiting" | "playing" | "finished"
@@ -100,6 +101,9 @@ func NewWithOptions(webFS fs.FS, opts Options) *Server {
 		coupons:    store,
 		adminToken: opts.AdminToken,
 		stop:       make(chan struct{}),
+	}
+	if err := store.PurgeExpired(); err != nil {
+		log.Printf("purging expired coupons: %v", err)
 	}
 
 	mux := http.NewServeMux()
@@ -197,8 +201,10 @@ func randomSeed() int64 {
 // lobbyIdentity carries the client-generated player id and any coupon codes
 // the client holds. Both are optional; missing values just mean no entitlement.
 type lobbyIdentity struct {
-	playerID string
-	coupons  []string
+	playerID     string
+	coupons      []string
+	lives        int
+	invalidLives bool
 }
 
 // parseLobbyIdentity reads the optional identity body sent with create/join/
@@ -216,11 +222,17 @@ func (s *Server) parseLobbyIdentity(r *http.Request) lobbyIdentity {
 	var raw struct {
 		PlayerID string   `json:"playerId"`
 		Coupons  []string `json:"coupons"`
+		Lives    *int     `json:"lives"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return id
 	}
 	id.playerID = normalizePlayerID(raw.PlayerID)
+	id.lives = 1
+	if raw.Lives != nil {
+		id.lives = *raw.Lives
+		id.invalidLives = id.lives < 1 || id.lives > 10
+	}
 	id.coupons = s.entitledCoupons(raw.Coupons)
 	return id
 }
@@ -237,6 +249,13 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 
 func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	identity := s.parseLobbyIdentity(r)
+	if identity.invalidLives {
+		writeErr(w, http.StatusBadRequest, "lives must be between 1 and 10")
+		return
+	}
+	if identity.lives == 0 {
+		identity.lives = 1
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -262,11 +281,13 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	s.rooms[code] = &room{
 		code:    code,
+		lives:   identity.lives,
 		players: [2]*player{{token: token, seat: 0, playerID: identity.playerID, coupons: identity.coupons}, nil},
 		game:    sim.New(randomSeed(), s.balance),
 		state:   "waiting",
 		created: time.Now(),
 	}
+	s.rooms[code].game.SetLives(identity.lives)
 	log.Printf("room %s created", code)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": code, "token": token, "seat": 0, "side": "A",

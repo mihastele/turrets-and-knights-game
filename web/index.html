@@ -19,6 +19,7 @@
       </div>
 
       <div class="lobby-actions">
+        <label for="room-lives">Lives per player <select id="room-lives"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></label>
         <button id="btn-create" class="btn btn-primary btn-big">Create Room</button>
         <div class="divider"><span>or</span></div>
         <form id="join-form" class="join-row">
@@ -32,7 +33,7 @@
         <a class="coffee-badge" href="https://buymeacoffee.com/mihastele" target="_blank" rel="noopener noreferrer">☕ Buy Me a Coffee</a>
         <div class="coupon-title">🎟️ Have a coupon?</div>
         <form id="coupon-form" class="coupon-row" autocomplete="off">
-          <input id="coupon-code" class="coupon-input" placeholder="DRGN-XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="19">
+          <input id="coupon-code" class="coupon-input" placeholder="DRGN-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false" maxlength="19">
           <button type="submit" class="btn btn-secondary btn-small">Redeem</button>
         </form>
         <p id="coupon-status" class="coupon-status"></p>
@@ -75,12 +76,12 @@
 
       <div class="tb-group tb-right">
         <div class="player-chip you" id="coin-chip-you">
-          <span class="pc-label">YOU</span>
+          <span class="pc-label">YOU <span id="lives-you">♥ 1</span></span>
           <span id="coins-you" class="pc-coins">0</span>
           <span id="income-you" class="pc-income">+10/5s</span>
         </div>
         <div class="player-chip foe">
-          <span class="pc-label">FOE</span>
+          <span class="pc-label">FOE <span id="lives-foe">♥ 1</span></span>
           <span id="coins-foe" class="pc-coins">0</span>
           <span id="income-foe" class="pc-income">+10/5s</span>
         </div>

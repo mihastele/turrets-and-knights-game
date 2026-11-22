@@ -27,6 +27,8 @@ type PlayerSnapshot struct {
 	Coins        int                `json:"coins"`
 	Income       int                `json:"income"` // per economy interval, factory included
 	Factory      bool               `json:"factory"`
+	FactoryLevel int                `json:"factoryLevel"`
+	Lives        int                `json:"lives"`
 	UnitUpgrades map[UnitType]int   `json:"unitUpgrades"`
 	DamageDealt  int                `json:"damageDealt"`
 	Kills        int                `json:"kills"`
@@ -95,6 +97,8 @@ func (s *Sim) Snapshot() Snapshot {
 			Coins:        p.Coins,
 			Income:       p.IncomePerInterval(s.cfg),
 			Factory:      p.Factory,
+			FactoryLevel: p.FactoryLevel,
+			Lives:        p.Lives,
 			UnitUpgrades: copyUpgrades(p.UnitUpgrades),
 			DamageDealt:  int(p.DamageDealt + 0.5),
 			Kills:        p.Kills,

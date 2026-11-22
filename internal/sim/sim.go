@@ -26,6 +26,7 @@ const (
 	ActionUpgradeUnit
 	ActionUpgradeTurret
 	ActionFieldEffect
+	ActionUpgradeFactory
 )
 
 // Coupon field-effect identifiers (balance lives in Balance.Coupon).
@@ -128,6 +129,8 @@ type Burn struct {
 type Player struct {
 	Coins        int              `json:"coins"`
 	Factory      bool             `json:"factory"`
+	FactoryLevel int              `json:"factoryLevel"`
+	Lives        int              `json:"lives"`
 	UnitUpgrades map[UnitType]int `json:"unitUpgrades"`
 
 	// Match statistics (for the end-of-match report).
@@ -141,7 +144,7 @@ type Player struct {
 func (p *Player) IncomePerInterval(cfg Balance) int {
 	inc := cfg.Economy.BaseIncome
 	if p.Factory {
-		inc += cfg.Economy.FactoryIncome
+		inc += cfg.Economy.FactoryIncome * (p.FactoryLevel + 1)
 	}
 	return inc
 }
@@ -235,6 +238,7 @@ func New(seed int64, cfg Balance) *Sim {
 	for i := range s.players {
 		s.players[i] = Player{
 			Coins:        cfg.StartCoins,
+			Lives:        1,
 			UnitUpgrades: map[UnitType]int{},
 		}
 		s.lastKillAt[i] = -100
@@ -242,6 +246,12 @@ func New(seed int64, cfg Balance) *Sim {
 	}
 	s.windfallIn = s.rollWindfallGap()
 	return s
+}
+
+func (s *Sim) SetLives(lives int) {
+	for i := range s.players {
+		s.players[i].Lives = lives
+	}
 }
 
 // Balance returns the balance table the sim was built with.
@@ -377,6 +387,22 @@ func (s *Sim) ApplyAction(a Action) error {
 		p.Coins -= cost
 		p.Factory = true
 		s.addEvent(a.Side, "factory", "Side %s built a Coin Factory", sideName(a.Side))
+		return nil
+
+	case ActionUpgradeFactory:
+		if !p.Factory {
+			return ErrFactoryBuilt
+		}
+		if p.FactoryLevel >= 2 {
+			return ErrMaxLevel
+		}
+		cost := [2]int{75, 125}[p.FactoryLevel]
+		if p.Coins < cost {
+			return fmt.Errorf("%w: need %d", ErrNotEnoughCoins, cost)
+		}
+		p.Coins -= cost
+		p.FactoryLevel++
+		s.addEvent(a.Side, "factory", "Side %s upgraded a Coin Factory", sideName(a.Side))
 		return nil
 
 	case ActionUpgradeUnit:
@@ -1016,30 +1042,43 @@ func (s *Sim) removeDead() {
 func (s *Sim) checkEnd() {
 	breachA := -1
 	breachB := -1
+	remaining := s.units[:0]
 	for _, u := range s.units {
 		if u.HP <= 0 {
 			continue
 		}
-		if u.Side == SideA && u.X >= FieldLength && breachA == -1 {
+		if u.Side == SideA && u.X >= FieldLength {
 			breachA = u.Lane
+			s.players[SideB].Lives--
+			continue
 		}
-		if u.Side == SideB && u.X <= 0 && breachB == -1 {
+		if u.Side == SideB && u.X <= 0 {
 			breachB = u.Lane
+			s.players[SideA].Lives--
+			continue
 		}
+		remaining = append(remaining, u)
+	}
+	s.units = remaining
+	if s.players[SideA].Lives < 0 {
+		s.players[SideA].Lives = 0
+	}
+	if s.players[SideB].Lives < 0 {
+		s.players[SideB].Lives = 0
 	}
 
 	switch {
-	case breachA != -1 && breachB != -1:
+	case s.players[SideA].Lives == 0 && s.players[SideB].Lives == 0:
 		s.Finished = true
 		s.Draw = true
 		s.Winner = NoSide
 		s.addEvent(SideNone, "draw", "Both armies breached on the same tick — draw!")
-	case breachA != -1:
+	case s.players[SideB].Lives == 0:
 		s.Finished = true
 		s.Winner = SideA
 		s.WinLane = breachA
 		s.addEvent(SideNone, "breach", "Blue breached in lane %d!", breachA+1)
-	case breachB != -1:
+	case s.players[SideA].Lives == 0:
 		s.Finished = true
 		s.Winner = SideB
 		s.WinLane = breachB

@@ -125,6 +125,9 @@ func normalizeDashes(code string) string {
 		c = strings.TrimPrefix(c, "DRGN")
 		c = "DRGN" + c
 	}
+	if len(c) == 16 {
+		return c[:4] + "-" + c[4:8] + "-" + c[8:12] + "-" + c[12:]
+	}
 	if len(c) == 12 {
 		return c[:4] + "-" + c[4:8] + "-" + c[8:]
 	}
@@ -161,7 +164,7 @@ func (s *Store) Create(label string, validFor time.Duration, maxUses int) (*Coup
 	defer s.mu.Unlock()
 	var code string
 	for i := 0; i < 32; i++ {
-		var b [8]byte
+		var b [12]byte
 		if _, err := rand.Read(b[:]); err != nil {
 			return nil, err
 		}
@@ -173,7 +176,7 @@ func (s *Store) Create(label string, validFor time.Duration, maxUses int) (*Coup
 			return sb.String()
 		}
 		// 8 random alphabet chars -> DRGN-XXXX-XXXX
-		code = "DRGN-" + part(0) + "-" + part(4)
+		code = "DRGN-" + part(0) + "-" + part(4) + "-" + part(8)
 		if _, exists := s.coupons[code]; !exists {
 			break
 		}
@@ -196,6 +199,29 @@ func (s *Store) Create(label string, validFor time.Duration, maxUses int) (*Coup
 	}
 	cp := *c
 	return &cp, nil
+}
+
+// PurgeExpired removes expired records and persists the updated store.
+func (s *Store) PurgeExpired() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := make(map[string]*Coupon)
+	for code, c := range s.coupons {
+		if !s.now().Before(c.ExpiresAt) {
+			removed[code] = c
+			delete(s.coupons, code)
+		}
+	}
+	if len(removed) == 0 {
+		return nil
+	}
+	if err := s.saveLocked(); err != nil {
+		for code, c := range removed {
+			s.coupons[code] = c
+		}
+		return err
+	}
+	return nil
 }
 
 // checkLocked validates a coupon for use right now. Assumes s.mu is held and
@@ -395,11 +421,8 @@ func (s *Store) saveLocked() error {
 		return err
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
-		_ = os.Remove(s.path)
-		if err2 := os.Rename(tmp, s.path); err2 != nil {
-			_ = os.Remove(tmp)
-			return fmt.Errorf("persist coupons: %w", err2)
-		}
+		_ = os.Remove(tmp)
+		return fmt.Errorf("persist coupons: %w", err)
 	}
 	// Best-effort directory sync so the rename survives a crash.
 	if dir, err := os.Open(filepath.Dir(s.path)); err == nil {

@@ -226,6 +226,8 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 		action.Lane = msg.Lane
 	case "factory":
 		action.Kind = sim.ActionBuildFactory
+	case "upgradeFactory":
+		action.Kind = sim.ActionUpgradeFactory
 	case "upgradeUnit":
 		action.Kind = sim.ActionUpgradeUnit
 		action.Unit = sim.UnitType(msg.Unit)
@@ -339,7 +341,13 @@ func (s *Server) tryStartLocked(rm *room) {
 	}
 	blocked := false
 	for i, p := range rm.players {
-		if !p.withoutCoupon && len(p.coupons) > 0 && chosen[i] == "" {
+		busyValid := false
+		for _, code := range p.coupons {
+			if s.coupons.Status(code).Valid {
+				busyValid = true
+			}
+		}
+		if !p.withoutCoupon && busyValid && chosen[i] == "" {
 			s.sendToLocked(p.conn, map[string]any{"type": "couponWait", "message": "Coupon is in use or has reached its usage limit."})
 			blocked = true
 		}
@@ -360,6 +368,7 @@ func (s *Server) tryStartLocked(rm *room) {
 	rematch := rm.rematch[0] && rm.rematch[1]
 	if rematch {
 		rm.game = sim.New(randomSeed(), s.balance)
+		rm.game.SetLives(rm.lives)
 		rm.snapEvery = 0
 		rm.rematch = [2]bool{}
 	}
@@ -393,6 +402,9 @@ func (s *Server) janitor() {
 		case <-s.stop:
 			return
 		case <-ticker.C:
+			if err := s.coupons.PurgeExpired(); err != nil {
+				log.Printf("purging expired coupons: %v", err)
+			}
 			s.mu.Lock()
 			for code, rm := range s.rooms {
 				connected := false

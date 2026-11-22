@@ -494,7 +494,7 @@ html, body {
 /* Portrait phones: ask to rotate, game is landscape-first */
 #rotate-overlay { display: none; }
 @media (orientation: portrait) and (max-width: 760px) {
-  #rotate-overlay {
+  body:has(#screen-game:not(.hidden)) #rotate-overlay {
     position: fixed; inset: 0; z-index: 100;
     display: flex; align-items: center; justify-content: center;
     background: rgba(6, 9, 24, .92); backdrop-filter: blur(4px);
