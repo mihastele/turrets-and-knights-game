@@ -211,6 +211,10 @@ html, body {
 .overlay-card h2.draw { color: var(--accent-2); }
 .overlay-card p { color: var(--muted); margin: 6px 0; }
 .overlay-actions { display: flex; gap: 12px; justify-content: center; margin-top: 16px; }
+.fullscreen-btn { display: none; }
+.gameover-card { display: flex; flex-direction: column; max-height: 100%; max-width: 100%; }
+.gameover-content { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.gameover-footer { flex-shrink: 0; }
 .hint { font-size: 12px; color: var(--muted); }
 .big-code {
   font-size: 44px; letter-spacing: 12px; font-weight: 800; color: var(--accent);
@@ -405,7 +409,8 @@ html, body {
 #battlefield { touch-action: manipulation; }
 
 @media (max-width: 1024px), (max-height: 560px) {
-  #topbar { padding: 4px 8px; gap: 6px; flex-wrap: nowrap; }
+  #topbar { padding: 4px 8px; gap: 6px; flex-wrap: wrap; }
+  .fullscreen-btn { display: inline-block; }
   .tb-group { gap: 6px; }
   .clock { font-size: 19px; }
   .phase-pill { font-size: 8px; letter-spacing: 2px; }
@@ -464,6 +469,16 @@ html, body {
   .windfall-banner { font-size: 13px; padding: 6px 14px; top: 8px; }
   .breach-warning { font-size: 10px; top: 44px; padding: 5px 10px; }
   .disconnect-banner { font-size: 11px; top: 8px; }
+}
+
+@media (max-height: 560px) {
+  #gameover-overlay { padding: 4px max(4px, env(safe-area-inset-right)) max(4px, env(safe-area-inset-bottom)) max(4px, env(safe-area-inset-left)); }
+  .gameover-card { padding: 8px 16px; }
+  .gameover-card h2 { font-size: 24px; margin-bottom: 2px; }
+  .gameover-card .match-stats { margin-top: 6px; }
+  .gameover-card .ms-row { padding: 4px 10px; }
+  .gameover-card .overlay-actions { margin-top: 6px; }
+  .gameover-card .hint:empty { display: none; }
 }
 
 @media (max-width: 640px) {

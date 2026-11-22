@@ -769,6 +769,7 @@ function showGameOver(snap) {
   els.rematchBtn.textContent = 'Rematch';
   els.rematchStatus.textContent = '';
   els.resignBtn.disabled = true;
+  $('gameover-content').scrollTop = 0;
   els.gameover.classList.remove('hidden');
 }
 
@@ -2032,11 +2033,34 @@ async function backToMenu() {
   SFX.click();
   refreshCouponStatus();
   showScreen('lobby');
+  if (document.fullscreenElement && document.exitFullscreen) {
+    try { await document.exitFullscreen(); } catch { /* Browser may already have exited fullscreen. */ }
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Input wiring
 // ---------------------------------------------------------------------------
+const fullscreenBtn = $('btn-fullscreen');
+function updateFullscreenButton() {
+  const active = !!document.fullscreenElement;
+  const label = active ? 'Exit fullscreen' : 'Enter fullscreen';
+  fullscreenBtn.classList.toggle('hidden', !active && (!document.fullscreenEnabled || !document.documentElement.requestFullscreen));
+  fullscreenBtn.setAttribute('aria-label', label);
+  fullscreenBtn.title = label;
+  fullscreenBtn.setAttribute('aria-pressed', String(active));
+}
+fullscreenBtn.addEventListener('click', async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch {
+    showToast('Fullscreen is unavailable', false);
+  }
+});
+document.addEventListener('fullscreenchange', updateFullscreenButton);
+updateFullscreenButton();
+
 function laneFromEvent(ev) {
   const rect = cv.getBoundingClientRect();
   const y = (ev.clientY - rect.top) * (H / rect.height);

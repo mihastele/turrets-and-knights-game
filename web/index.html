@@ -91,6 +91,7 @@
           <button class="emote-btn" data-emote="wow" title="Wow">😱</button>
           <button class="emote-btn" data-emote="gg" title="GG">🤝</button>
         </div>
+        <button id="btn-fullscreen" class="btn btn-ghost btn-small fullscreen-btn hidden" type="button" aria-label="Enter fullscreen" title="Enter fullscreen">⛶</button>
         <button id="btn-mute" class="btn btn-ghost btn-small mute-btn" title="Toggle sound">🔊</button>
       </div>
     </header>
@@ -114,15 +115,19 @@
         </div>
 
         <div id="gameover-overlay" class="overlay hidden">
-          <div class="overlay-card">
+          <div class="overlay-card gameover-card">
+            <div id="gameover-content" class="gameover-content" tabindex="0">
             <h2 id="result-title">VICTORY</h2>
             <p id="result-detail">Breach in lane 3</p>
             <div id="match-stats" class="match-stats"></div>
+            </div>
+            <div class="gameover-footer">
             <div class="overlay-actions">
               <button id="btn-rematch" class="btn btn-primary">Rematch</button>
               <button id="btn-back-menu" class="btn btn-secondary">Main menu</button>
             </div>
             <p id="rematch-status" class="hint"></p>
+            </div>
           </div>
         </div>
 
