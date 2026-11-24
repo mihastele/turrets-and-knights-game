@@ -186,26 +186,39 @@ lane), play as usual. Large screens keep the classic fixed sidebar.
 
 ## How to play
 
-- Click a shop item (or press **1–5** for troops, **6** for turret, **7** for
-  factory), then **click a lane** to deploy / build. **Esc** or right-click
-  cancels the selection.
-- You start with **100 coins**. **+10 every 5s**, plus a **shared windfall of
+- Click a shop item (or press **1–7** for troops, **T** turret, **W** wall,
+  **S** scout, **F** factory, **8–0/-/=** coupon units and abilities), then
+  **click a lane** to deploy / build / reveal. **Esc**, **Space**, or
+  right-click cancels the selection.
+- You start with **110 coins**. **+12 every 5s**, plus a **shared windfall of
   5–10 every 12–20s** rolled once for both players.
-- A **Coin Factory** (55c) adds **+5 every 5s**; it pays back in ~55s. One
-  per player.
-- **Turrets** (70c, **two per lane**) stop lone attackers but not an escorted ram.
-  Only soldiers, bowmen and knights fight troops — **rams and siege engines damage
-  turrets only** and cannot hurt units. **Siege engines** outrange turrets but die
-  to anything that reaches them.
-  **Knights** punish open lanes but lose straight fights against equal coin
-  in soldiers. **Bowmen** shoot over your frontline but fold up close.
-- **Unit upgrades** apply to future spawns only; **turret upgrades** apply in
-  place, improve stats and never heal. Both cap at 2 levels, second costs
-  more. **Resign** forfeits the match (two-click confirm, top-left).
-- At **6:00** overtime begins: turret construction/upgrades are locked and
-  turrets lose 15% of their damage every 30s until it floors at 0. Troops and
-  income keep flowing. At **10:00** the match is a draw. A simultaneous
-  double breach is also a draw.
+- A **Coin Factory** (55c) adds **+5 every 5s** per tier (upgradeable twice);
+  it pays back in ~55s. One per player.
+- **Fog of war:** you always see your own half; past midfield you only see
+  what your troops, towers, walls, and **🔭 Scout Flares** (15c, 8s full-lane
+  reveal) uncover. Spotting an enemy unit pays a **recon bounty** — pushing
+  out beats sitting back and mirroring.
+- **Field events** drop mid-field every ~18–30s: gold loot, shield shrines,
+  neutral golems (kill for bounty), and fire/tar/mud/spike hazards. A rumor
+  names the lane, never the prize — scout it or race for it.
+- **Counters win fights:** spears shred cavalry, bows shred flyers and
+  infantry but bounce off armor, knights charge down ranged lines and siege,
+  mages melt shields and heavies, rams (3.8×) and siege engines break
+  **towers (65c, two per lane)** and **walls (45c, one per lane, thorns when
+  upgraded)**. Ground units cannot walk past a live enemy tower or wall;
+  flyers bypass both.
+- **5-track upgrades** specialize each unit (damage, attack speed, HP,
+  shield, coupon-locked **Elite Doctrine**) and towers (damage, shield,
+  coupon-locked **flak** for anti-air). Unit upgrades apply to future spawns
+  only; tower upgrades apply in place and never heal. **Resign** forfeits
+  the match (two-click confirm, top-left).
+- **Win strategy** is picked per room: **Lives** (N total breaches) or
+  **Breaches** (N distinct lanes). Breaching pays coins (capped per lane);
+  losing a life grants comeback coins.
+- At **6:00** overtime begins: tower/wall construction and upgrades lock,
+  towers lose 15% damage every 30s (floors at 0), and attackers gain +20%
+  vs structures per step. Troops and income keep flowing. At **10:00** the
+  match is a draw. A simultaneous double breach is also a draw.
 - Both players' coins and income are public — watch the enemy's war fund.
 - If you disconnect, refresh the page: you rejoin your seat (rooms are kept
   for 15 minutes).
@@ -217,8 +230,8 @@ cmd/lanesiege/     entry point (flags, PORT env, graceful shutdown)
 embed.go           //go:embed web — the client inside the binary
 internal/sim/      game simulation — pure Go, no I/O, no network
   balance.go       ALL tunable numbers (prices, HP, damage, ranges, timers)
-  sim.go           tick loop, combat, economy, supply caches, streaks, win detection
-  snapshot.go      the wire snapshot sent to clients
+  sim.go           tick loop, combat, economy, anomalies, fog of war, win detection
+  snapshot.go      per-viewer wire snapshots (fog-filtered) sent to clients
 internal/server/   HTTP + WebSocket rooms, lobby, match ownership
   server.go        create/join/rejoin, health, static files, room lifecycle
   ws.go            socket lifecycle, message handling, broadcast
@@ -246,12 +259,17 @@ go test -short ./...   # skip the end-to-end test
 ```
 
 Coverage includes spending, insufficient funds, invalid lanes, turret slot occupancy
-(two slots per lane), slot-targeted turret upgrades, factory limit, shared seeded
-windfall (identical across same-seed sims),
-future-only unit upgrades, non-healing turret upgrades, overtime lockout and
-damage decay to zero, simultaneous-breach draw, time-limit draw, ram vs.
-turret prioritization, soldier-ignores-turret, siege min-range, turret target
-focus, resign flow, rematch flow.
+(two slots per lane), slot-targeted turret upgrades, factory limit and tiers,
+shared seeded windfalls (identical across same-seed sims), 5-track unit/turret
+upgrades with coupon-locked specials, future-only unit upgrades, non-healing
+turret upgrades, class counters (soldiers beat knights for equal coin,
+anti-air, charge, shields, thorns), kill/tower/wall bounties, fog of war
+filtering, recon bounties, timed scout flares, hidden field events, anomaly
+spawn/claim/contest/expiry, lane dominance, lives and breaches win modes,
+breach loot caps, overtime lockout with turret decay and breacher bonus,
+simultaneous-breach draw, time-limit draw, ram structure priority, siege
+min-range hold, turret target focus and flak, coupon entitlement and cooldowns,
+resign flow, rematch flow, and room validation.
 
 ## Tuning the game
 
@@ -262,24 +280,29 @@ deterministic per seed, so you can replay a specific line with
 
 ## What's in the game
 
-- **Five lanes, two war economies** — shared windfalls, a coin factory you
-  must pay down before it beats an early enemy rush, public ledgers.
-- **Supply caches** drop mid-field at 45s, 2:30 and 4:20 — roughly +30 coins
-  for the first army to walk over one. The bridge of a lane is a battlefield,
-  not just a path.
-- **Five units, paired turrets, upgrades twice deep** — two turret slots per
-  lane; troops-vs-structures targeting (rams and siege engines can't touch
-  units; soldiers, bowmen and knights can't touch turrets); counters matted in
-  matching paper-rock-scissors: soldiers > knights, bowmen > fragile damage,
-  rams > turrets, siege engines > static defenses.
+- **Five lanes, two war economies** — shared windfalls, an upgradeable coin
+  factory you must pay down before it beats an early rush, kill and structure
+  bounties, public ledgers.
+- **Fog of war + recon** — your half is always visible; past midfield,
+  vision comes from your army, towers, walls, and scout flares, and every
+  first spot pays coins. Turtling blind loses to scouting and pushing.
+- **Field events** — gold loot, shield shrines, bounty golems, and
+  fire/tar/mud/spike hazards drop all match long. Contested loot waits for a
+  winner; hidden events reward the curious.
+- **Nine units, walls, paired turrets, 5-track upgrades** — shieldbearers,
+  mages, and a coupon Valkyrie join the roster; every unit fights every
+  target through a sharp counter matrix (no single best unit); walls stall
+  raiders with thorns; towers take flak; elites take coupon doctrines.
 - **Kill streaks** — double kills, triple kills and rampages get announced
-  with a horn blast.
-- **Match report** — damage dealt, kills, units lost and turrets destroyed
-  for both sides on the game-over screen.
+  with a horn blast (and pay growing bounties).
+- **Match report** — damage dealt, kills, units lost, turrets destroyed, and
+  bounty/recon earnings for both sides on the game-over screen.
 - **Quick emotes** (👏 😂 😖 😱 🤝) — trash talk without typing.
-- **Match structure** — 100-coin start, win by beaching a unit; 6:00
-  overtime (turrets disarmed); 10:00 draw; simultaneous breach is a draw;
-  resign with two clicks.
+- **Match structure** — 110-coin start; lives or distinct-lanes win modes;
+  breach bounties and comeback coins; 6:00 overtime (towers fade, breachers
+  rise); 10:00 draw; simultaneous breach is a draw; resign with two clicks.
+- **Public lobbies** — open rooms list themselves for quick pickup games;
+  private rooms stay invite-only.
 - **Game feel** — projectiles with arcs (arrows, tracer rounds, plunging
   shells with explosions), damage numbers, death poofs, muzzle flashes, hit
   flashes, screen shake on turret kills, a breach-warning siren when an enemy
@@ -291,14 +314,16 @@ deterministic per seed, so you can replay a specific line with
 ## Verified
 
 - `go vet`, `gofmt` clean; all tests pass, including the HTTP+WS end-to-end
-  tests (full match, resign forfeit, room guards).
-- Game logic covered by unit tests: seeded cache spawn/claim/expiry, kill
-  streak detection, damage attribution, live stats in snapshots.
-- Two-browser (headless Edge) matches: create → join → deploy → turret →
-  factory → breach → victory/defeat → rematch; resign flow; windfall banner
-  and first blood in the feed; supply-cache spawn verified live (crate
-  renders mid-field with halo and expiry ring); emotes end-to-end; zero
-  console errors.
+  tests (full match, resign forfeit, room guards, win-mode validation,
+  wall/scout actions, per-seat fog snapshots).
+- Game logic covered by unit tests: anomaly spawn/claim/contest/expiry, fog
+  and recon, kill streak detection, damage attribution, live stats in
+  snapshots, counter matchups, and both win modes.
+- Two-browser headless matches: create → join → deploy → turret → factory →
+  wall → scout → breach → victory/defeat → rematch; resign flow; windfall
+  banner and first blood in the feed; anomaly spawn verified live (renders
+  mid-field with expiry ring); fog overlay and hidden-event counter;
+  emotes end-to-end; zero console errors.
 - Docker image rebuilt and re-verified after the content update (serves the
   new client; `/healthz` ok).
 - One-command public tunnel (`cloudflared`) verified end-to-end: page, API,

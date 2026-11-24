@@ -3,7 +3,6 @@ package sim
 import (
 	"errors"
 	"math"
-	"strings"
 	"testing"
 )
 
@@ -18,7 +17,20 @@ func giveCoins(s *Sim, side, amount int) {
 
 func coinBalance(s *Sim, side int) int { return s.players[side].Coins }
 
-// step runs the sim for n seconds at TickDT.
+func clearField(s *Sim) {
+	s.units = nil
+	s.anomalies = nil
+	for side := 0; side < 2; side++ {
+		for lane := 0; lane < NumLanes; lane++ {
+			s.towerShields[side][lane] = nil
+			s.walls[side][lane] = nil
+			for slot := 0; slot < TurretSlots; slot++ {
+				s.turrets[side][lane][slot] = nil
+			}
+		}
+	}
+}
+
 func step(s *Sim, seconds float64) {
 	ticks := int(math.Round(seconds / TickDT))
 	for i := 0; i < ticks; i++ {
@@ -26,754 +38,880 @@ func step(s *Sim, seconds float64) {
 	}
 }
 
-func TestStartState(t *testing.T) {
+func drainedEvents(s *Sim) []Event { return s.DrainEvents() }
+
+func TestStartStateEmptyField(t *testing.T) {
 	s := newTestSim(t)
-	if got := coinBalance(s, SideA); got != 100 {
-		t.Fatalf("side A starts with %d coins, want 100", got)
+	if len(s.units) != 0 || len(s.anomalies) != 0 {
+		t.Fatalf("field should start empty, got %d units %d anomalies", len(s.units), len(s.anomalies))
 	}
-	if got := coinBalance(s, SideB); got != 100 {
-		t.Fatalf("side B starts with %d coins, want 100", got)
+	for side := 0; side < 2; side++ {
+		for lane := 0; lane < NumLanes; lane++ {
+			for slot := 0; slot < TurretSlots; slot++ {
+				if s.turrets[side][lane][slot] != nil {
+					t.Fatalf("side %d lane %d slot %d should start empty", side, lane, slot)
+				}
+			}
+			if s.walls[side][lane] != nil {
+				t.Fatalf("side %d lane %d wall should start empty", side, lane)
+			}
+		}
 	}
-	if s.Finished || s.Draw || s.Winner != NoSide {
-		t.Fatal("new sim should not be finished")
+	if got := coinBalance(s, SideA); got != s.cfg.StartCoins {
+		t.Fatalf("side A starts with %d coins, want %d", got, s.cfg.StartCoins)
+	}
+	if s.players[SideA].Lives != 1 || s.WinMode != WinModeLives {
+		t.Fatalf("expected lives mode with 1 life, got %s lives=%d", s.WinMode, s.players[SideA].Lives)
 	}
 }
 
-func TestDeployDeductsCoins(t *testing.T) {
+func TestDeploySpendsCoinsAndFightsImmediately(t *testing.T) {
 	s := newTestSim(t)
-	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 2, Unit: Soldier}); err != nil {
-		t.Fatalf("deploy: %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Soldier}); err != nil {
+		t.Fatal(err)
 	}
-	if got := coinBalance(s, SideA); got != 80 {
-		t.Fatalf("coins = %d, want 80", got)
+	if want := s.cfg.StartCoins - s.cfg.Units[Soldier].Cost; coinBalance(s, SideA) != want {
+		t.Fatalf("coins = %d, want %d", coinBalance(s, SideA), want)
 	}
 	if len(s.units) != 1 {
 		t.Fatalf("expected 1 unit, got %d", len(s.units))
 	}
-	u := s.units[0]
-	if u.Side != SideA || u.Lane != 2 || u.X != 2 {
-		t.Fatalf("unit placed wrong: %+v", u)
+	x0 := s.units[0].X
+	step(s, 1.0)
+	if s.units[0].X <= x0 {
+		t.Fatal("deployed unit should march immediately in real time")
 	}
 }
 
-func TestDeployInsufficientFundsDoesNotCharge(t *testing.T) {
+func TestDeployRejectsBadInput(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 30)
-	err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Siege})
-	if !errors.Is(err, ErrNotEnoughCoins) {
-		t.Fatalf("want ErrNotEnoughCoins, got %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: -1, Unit: Soldier}); !errors.Is(err, ErrInvalidLane) {
+		t.Fatalf("bad lane: want ErrInvalidLane, got %v", err)
 	}
-	if got := coinBalance(s, SideA); got != 30 {
-		t.Fatalf("coins changed on failed deploy: %d", got)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: "peasant"}); !errors.Is(err, ErrUnknownUnit) {
+		t.Fatalf("bad unit: want ErrUnknownUnit, got %v", err)
 	}
-	if len(s.units) != 0 {
-		t.Fatal("unit spawned despite insufficient funds")
+	giveCoins(s, SideA, 5)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Soldier}); !errors.Is(err, ErrNotEnoughCoins) {
+		t.Fatalf("poor: want ErrNotEnoughCoins, got %v", err)
 	}
-}
-
-func TestDeployInvalidLane(t *testing.T) {
-	s := newTestSim(t)
-	for _, lane := range []int{-1, 5, 99} {
-		if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: lane, Unit: Soldier}); !errors.Is(err, ErrInvalidLane) {
-			t.Fatalf("lane %d: want ErrInvalidLane, got %v", lane, err)
-		}
-	}
-	if got := coinBalance(s, SideA); got != 100 {
-		t.Fatalf("coins changed on invalid lane: %d", got)
-	}
-}
-
-func TestTurretTwoSlotsPerLane(t *testing.T) {
-	s := newTestSim(t)
 	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1}); err != nil {
-		t.Fatalf("build turret slot 0: %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Dragon}); !errors.Is(err, ErrCouponRequired) {
+		t.Fatalf("dragon without coupon: want ErrCouponRequired, got %v", err)
 	}
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1}); err != nil {
-		t.Fatalf("build turret slot 1: %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Valkyrie}); !errors.Is(err, ErrCouponRequired) {
+		t.Fatalf("valkyrie without coupon: want ErrCouponRequired, got %v", err)
 	}
-	for i, want := range []int{0, 1} {
-		tr := s.turrets[SideA][1][want]
-		if tr == nil {
-			t.Fatalf("slot %d empty after two builds", want)
-		}
-		if tr.Slot != i {
-			t.Fatalf("turret in slot array index %d reports slot %d", i, tr.Slot)
-		}
-	}
-	before := coinBalance(s, SideA)
-	err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1})
-	if !errors.Is(err, ErrPadOccupied) {
-		t.Fatalf("want ErrPadOccupied on third build, got %v", err)
-	}
-	if got := coinBalance(s, SideA); got != before {
-		t.Fatalf("coins changed on failed build: %d -> %d", before, got)
-	}
-	// Other lane still fine.
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2}); err != nil {
-		t.Fatalf("build turret in another lane: %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Dragon, Entitled: true}); err != nil {
+		t.Fatalf("dragon with coupon: %v", err)
 	}
 }
 
-func TestTurretCannotAfford(t *testing.T) {
+func TestIncomeFlowsOnInterval(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideB, 69)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); !errors.Is(err, ErrNotEnoughCoins) {
-		t.Fatalf("want ErrNotEnoughCoins, got %v", err)
-	}
-	if s.turrets[SideB][0][0] != nil {
-		t.Fatal("turret built without paying")
-	}
-}
-
-func TestFactoryOnlyOne(t *testing.T) {
-	s := newTestSim(t)
-	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); err != nil {
-		t.Fatalf("build factory: %v", err)
-	}
-	before := coinBalance(s, SideA)
-	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); !errors.Is(err, ErrFactoryBuilt) {
-		t.Fatalf("want ErrFactoryBuilt, got %v", err)
-	}
-	if coinBalance(s, SideA) != before {
-		t.Fatal("coins changed on failed factory purchase")
+	step(s, s.cfg.Economy.Interval+0.1)
+	// No windfall can fire before WindfallGapMin (12s), so this is pure income.
+	want := s.cfg.StartCoins + s.cfg.Economy.BaseIncome
+	if coinBalance(s, SideA) != want || coinBalance(s, SideB) != want {
+		t.Fatalf("coins = %d/%d, want %d each", coinBalance(s, SideA), coinBalance(s, SideB), want)
 	}
 }
 
-func TestFactoryUpgradesAndIncome(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); err != nil {
-		t.Fatal(err)
+func TestSharedSeededWindfall(t *testing.T) {
+	a, b := New(7, DefaultBalance()), New(7, DefaultBalance())
+	step(a, 25)
+	step(b, 25)
+	if coinBalance(a, SideA) != coinBalance(b, SideA) {
+		t.Fatalf("same-seed sims diverged: %d vs %d", coinBalance(a, SideA), coinBalance(b, SideA))
 	}
-	for level, want := range []int{20, 25} {
-		if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); err != nil {
-			t.Fatal(err)
-		}
-		if got := s.players[SideA].IncomePerInterval(s.cfg); got != want {
-			t.Fatalf("upgrade %d income = %d, want %d", level+1, got, want)
-		}
-	}
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); !errors.Is(err, ErrMaxLevel) {
-		t.Fatalf("want max level, got %v", err)
-	}
-}
-
-func TestMultipleLivesAndSimultaneousElimination(t *testing.T) {
-	s := newTestSim(t)
-	s.SetLives(3)
-	s.units = []*Unit{{Side: SideA, Lane: 0, X: FieldLength, HP: 1}, {Side: SideA, Lane: 1, X: FieldLength, HP: 1}}
-	s.checkEnd()
-	if s.Finished || s.players[SideB].Lives != 1 || len(s.units) != 0 {
-		t.Fatalf("unexpected first breach: %+v", s.Snapshot())
-	}
-	s.units = []*Unit{{Side: SideA, Lane: 0, X: FieldLength, HP: 1}, {Side: SideB, Lane: 0, X: 0, HP: 1}, {Side: SideB, Lane: 1, X: 0, HP: 1}, {Side: SideB, Lane: 2, X: 0, HP: 1}}
-	s.checkEnd()
-	if !s.Finished || !s.Draw {
-		t.Fatal("simultaneous elimination should draw")
-	}
-}
-
-func TestIncomeTicksEveryFiveSeconds(t *testing.T) {
-	s := newTestSim(t)
-	step(s, 5.0)
-	// 100 + 10 (base income); windfall may or may not have landed yet, so only
-	// check the guaranteed portion via fresh sims at sub-windfall times.
-	if got := coinBalance(s, SideA); got < 110 {
-		t.Fatalf("side A has %d coins after 5s, want >= 110", got)
-	}
-}
-
-func TestFactoryIncomeAddedToInterval(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); err != nil {
-		t.Fatal(err)
-	}
-	before := coinBalance(s, SideA)
-	step(s, 5.0)
-	got := coinBalance(s, SideA) - before
-	// Base 10 + factory 5 = 15, plus possibly a windfall (>= 0).
-	if got < 15 {
-		t.Fatalf("income over 5s = %d, want at least 15", got)
-	}
-}
-
-func TestWindfallIsSharedAndSeeded(t *testing.T) {
-	// Two sims with the same seed must produce identical windfall sequences.
-	a, b := New(123, DefaultBalance()), New(123, DefaultBalance())
-	for i := 0; i < 60*20; i++ { // 60 simulated seconds
-		a.Step(TickDT)
-		b.Step(TickDT)
-	}
-	ea, eb := a.DrainEvents(), b.DrainEvents()
-	findWindfall := func(evs []Event) []string {
-		var out []string
-		for _, e := range evs {
-			if e.Kind == "windfall" {
-				out = append(out, e.Text)
+	found := false
+	for _, ev := range drainedEvents(a) {
+		if ev.Kind == "windfall" {
+			found = true
+			if ev.Amount < a.cfg.Economy.WindfallMin || ev.Amount > a.cfg.Economy.WindfallMax {
+				t.Fatalf("windfall amount %d out of bounds", ev.Amount)
 			}
 		}
-		return out
 	}
-	wa, wb := findWindfall(ea), findWindfall(eb)
-	if len(wa) == 0 {
-		t.Fatal("expected at least one windfall in 60s of simulated time")
-	}
-	if strings.Join(wa, "|") != strings.Join(wb, "|") {
-		t.Fatalf("seeded sims diverged:\nA: %v\nB: %v", wa, wb)
-	}
-	// Windfalls are shared: after 60s both players must have equal totals
-	// (identical income, identical windfalls, no purchases).
-	if coinBalance(a, SideA) != coinBalance(a, SideB) {
-		t.Fatalf("windfall not shared: A=%d B=%d", coinBalance(a, SideA), coinBalance(a, SideB))
+	if !found {
+		t.Fatal("expected at least one windfall in 25s")
 	}
 }
 
-func TestUnitUpgradeAffectsFutureSpawnsOnly(t *testing.T) {
+func TestFactoryLimitLevelsAndIncome(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 500)
+	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildFactory, Side: SideA}); !errors.Is(err, ErrFactoryBuilt) {
+		t.Fatalf("second factory: want ErrFactoryBuilt, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeFactory, Side: SideA}); !errors.Is(err, ErrMaxLevel) {
+		t.Fatalf("third factory upgrade: want ErrMaxLevel, got %v", err)
+	}
+	want := s.cfg.Economy.BaseIncome + s.cfg.Economy.FactoryIncome*3
+	if got := s.players[SideA].IncomePerInterval(s.cfg); got != want {
+		t.Fatalf("income = %d, want %d", got, want)
+	}
+}
+
+func TestFiveTrackUpgradesSpecialCouponLockAndFutureOnly(t *testing.T) {
 	s := newTestSim(t)
 	giveCoins(s, SideA, 1000)
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier, Track: TrackAttackSpeed}); err != nil {
+		t.Fatalf("upgrade attackSpeed: %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier, Track: TrackShield}); err != nil {
+		t.Fatalf("upgrade shield: %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier, Track: TrackSpecial}); !errors.Is(err, ErrCouponRequired) {
+		t.Fatalf("special track without coupon: want ErrCouponRequired, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier, Track: TrackSpecial, Entitled: true}); err != nil {
+		t.Fatalf("special track with coupon: %v", err)
+	}
 	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Soldier}); err != nil {
 		t.Fatal(err)
 	}
-	before := s.units[0]
-	baseHP, baseDmg := before.MaxHP, before.Damage
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier}); err != nil {
+	u := s.units[0]
+	if u.Shield <= 0 {
+		t.Fatalf("expected upgraded soldier to spawn with shield, got %v", u.Shield)
+	}
+
+	// Future spawns only: buy damage, then compare an old and a new unit.
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 1, Unit: Bowman}); err != nil {
 		t.Fatal(err)
 	}
-	// Existing unit untouched.
-	if before.MaxHP != baseHP || before.Damage != baseDmg {
-		t.Fatal("upgrade affected an already-spawned unit")
-	}
-	// Next spawn is upgraded.
-	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 1, Unit: Soldier}); err != nil {
+	oldBowman := s.units[len(s.units)-1]
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Bowman, Track: TrackDamage}); err != nil {
 		t.Fatal(err)
 	}
-	after := s.units[1]
-	if after.MaxHP <= baseHP || after.Damage <= baseDmg {
-		t.Fatalf("upgraded soldier not stronger: hp %v->%v dmg %v->%v", baseHP, after.MaxHP, baseDmg, after.Damage)
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 1, Unit: Bowman}); err != nil {
+		t.Fatal(err)
+	}
+	newBowman := s.units[len(s.units)-1]
+	if oldBowman.Damage != s.cfg.Units[Bowman].Damage {
+		t.Fatalf("existing unit changed after upgrade: %v", oldBowman.Damage)
+	}
+	want := s.cfg.Units[Bowman].Damage * (1 + s.cfg.Units[Bowman].UpgradeDamage)
+	if math.Abs(newBowman.Damage-want) > 1e-9 {
+		t.Fatalf("new spawn damage = %v, want %v", newBowman.Damage, want)
 	}
 }
 
-func TestUnitUpgradeCapAndCostEscalation(t *testing.T) {
+func TestCounterDamageAndKillBounty(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	cfg := DefaultBalance().Units[Soldier]
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier}); err != nil {
-		t.Fatal(err)
+	s.cfg.Fog.ReconBounty = 0 // isolate the kill bounty
+	sol := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 50, HP: 75, MaxHP: 75, Damage: 10}
+	kni := &Unit{ID: 2, Type: Knight, Side: SideB, Lane: 0, X: 51, HP: 10, MaxHP: 100, Damage: 16}
+	s.units = []*Unit{sol, kni}
+	s.nextUnitID = 3
+
+	coinsBefore := coinBalance(s, SideA)
+	step(s, 0.2) // Soldier hits Knight for 10*1.45 = 14.5 dmg, killing it
+	if kni.HP > 0 {
+		t.Fatalf("expected soldier to kill 10-HP knight, remaining hp=%v", kni.HP)
 	}
-	if got := coinBalance(s, SideA); got != 1000-cfg.UpgradeCosts[0] {
-		t.Fatalf("level 1 cost mismatch, balance %d", got)
-	}
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier}); err != nil {
-		t.Fatal(err)
-	}
-	if got := coinBalance(s, SideA); got != 1000-cfg.UpgradeCosts[0]-cfg.UpgradeCosts[1] {
-		t.Fatalf("level 2 cost mismatch, balance %d", got)
-	}
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: SideA, Unit: Soldier}); !errors.Is(err, ErrMaxLevel) {
-		t.Fatalf("want ErrMaxLevel, got %v", err)
+	gained := coinBalance(s, SideA) - coinsBefore
+	wantBounty := int(math.Round(float64(s.cfg.Units[Knight].Cost) * 0.35))
+	if gained != wantBounty {
+		t.Fatalf("kill bounty = %d, want %d", gained, wantBounty)
 	}
 }
 
-func TestTurretUpgradeDoesNotHeal(t *testing.T) {
+func TestSoldiersBeatKnightForEqualCoin(t *testing.T) {
+	// The counter triangle in one fight: 2x Soldier (40c) must beat 1x Knight (45c).
 	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2}); err != nil {
+	s.anomalyIn = 9999
+	s.units = []*Unit{
+		{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 46, HP: 75, MaxHP: 75, Damage: 10},
+		{ID: 2, Type: Soldier, Side: SideA, Lane: 0, X: 47, HP: 75, MaxHP: 75, Damage: 10},
+		{ID: 3, Type: Knight, Side: SideB, Lane: 0, X: 53, HP: 100, MaxHP: 100, Damage: 16},
+	}
+	s.nextUnitID = 4
+	for i := 0; i < 200 && len(s.units) == 3; i++ {
+		s.Step(TickDT)
+	}
+	knightAlive, soldiersAlive := false, 0
+	for _, u := range s.units {
+		if u.Type == Knight {
+			knightAlive = true
+		} else {
+			soldiersAlive++
+		}
+	}
+	if knightAlive {
+		t.Fatal("expected the knight to die to 2 soldiers")
+	}
+	if soldiersAlive == 0 {
+		t.Fatal("expected at least one soldier to survive")
+	}
+}
+
+func TestBowmanShredsFlyers(t *testing.T) {
+	s := newTestSim(t)
+	bow := &Unit{ID: 1, Type: Bowman, Side: SideA, Lane: 0, X: 40, HP: 48, MaxHP: 48, Damage: 13}
+	drg := &Unit{ID: 2, Type: Dragon, Side: SideB, Lane: 0, X: 50, HP: 240, MaxHP: 240, Shield: 50, MaxShield: 50, Damage: 26}
+	s.units = []*Unit{bow, drg}
+	s.nextUnitID = 3
+	step(s, 0.2) // one bowman volley, no time for a second
+	wantShield := 50 - 13*1.65
+	if math.Abs(drg.Shield-wantShield) > 1e-6 {
+		t.Fatalf("dragon shield = %v, want %v (13 * 1.65 anti-air)", drg.Shield, wantShield)
+	}
+	if drg.HP != 240 {
+		t.Fatalf("shield should absorb first, hp = %v", drg.HP)
+	}
+}
+
+func TestRamBreaksTowers(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideB, 500)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
 		t.Fatal(err)
 	}
-	tr := s.turrets[SideA][2][0]
-	tr.HP = 40 // simulate damage
-	baseDamage := tr.Damage
-	baseMaxHP := tr.MaxHP
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 2}); err != nil {
+	tr := s.turrets[SideB][0][0]
+	ram := &Unit{ID: 1, Type: Ram, Side: SideA, Lane: 0, X: tr.X - 1.5, HP: 180, MaxHP: 180, Shield: 30, MaxShield: 30, Damage: 9}
+	s.units = []*Unit{ram}
+	s.nextUnitID = 2
+	before := tr.HP + tr.Shield
+	step(s, 0.2)
+	if tr.HP+tr.Shield >= before {
+		t.Fatal("ram should smash the tower")
+	}
+	if ram.X > tr.X {
+		t.Fatalf("ram walked past alive tower: ram=%v tower=%v", ram.X, tr.X)
+	}
+}
+
+func TestShieldAbsorbsBeforeHPAndMageShredsShields(t *testing.T) {
+	s := newTestSim(t)
+	u := &Unit{ID: 1, Type: Shieldbearer, Side: SideA, Lane: 0, X: 10, HP: 130, MaxHP: 130, Shield: 45, MaxShield: 45, Damage: 11}
+	s.dealDamage(SideB, u, 20, 1.0)
+	if u.Shield != 25 || u.HP != 130 {
+		t.Fatalf("shield should absorb first: shield=%v hp=%v", u.Shield, u.HP)
+	}
+	s.dealDamage(SideB, u, 20, 2.0) // mage-like 2x vs shields
+	if u.Shield != 0 || u.HP >= 130 {
+		t.Fatalf("2x shield damage should break through: shield=%v hp=%v", u.Shield, u.HP)
+	}
+}
+
+func TestTowerSlotsUpgradesAndNoHeal(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 500)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if tr.HP != 40 {
-		t.Fatalf("turret healed by upgrade: hp=%v", tr.HP)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+		t.Fatal(err)
 	}
-	if tr.MaxHP <= baseMaxHP {
-		t.Fatal("turret max HP did not grow")
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); !errors.Is(err, ErrPadOccupied) {
+		t.Fatalf("third tower in lane: want ErrPadOccupied, got %v", err)
 	}
-	if tr.Damage <= baseDamage {
-		t.Fatal("turret damage did not grow")
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 1}); !errors.Is(err, ErrNoTurret) {
+		t.Fatalf("upgrade empty lane: want ErrNoTurret, got %v", err)
 	}
-}
-
-func TestTurretUpgradeCap(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0})
-	_ = s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0})
-	_ = s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0})
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0}); !errors.Is(err, ErrMaxLevel) {
-		t.Fatalf("want ErrMaxLevel, got %v", err)
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 5}); !errors.Is(err, ErrInvalidSlot) {
+		t.Fatalf("bad slot: want ErrInvalidSlot, got %v", err)
 	}
-}
-
-func TestOvertimeLocksTurretBuildAndUpgrade(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	s.Time = s.cfg.Overtime.Start + 0.01
-	step(s, TickDT) // cross into overtime
-	if !s.Overtime {
-		t.Fatal("expected overtime after 360s")
+	tr := s.turrets[SideA][0][1]
+	tr.HP -= 20
+	hpBefore := tr.HP
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 1, Track: TrackHP}); err != nil {
+		t.Fatal(err)
 	}
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); !errors.Is(err, ErrOvertime) {
-		t.Fatalf("build in overtime: want ErrOvertime, got %v", err)
+	if tr.HP != hpBefore {
+		t.Fatalf("turret upgrades must never heal: %v -> %v", hpBefore, tr.HP)
 	}
-	// Pre-build a turret before overtime to test upgrades are locked too.
-	pre := newTestSim(t)
-	giveCoins(pre, SideA, 1000)
-	_ = pre.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0})
-	pre.Time = pre.cfg.Overtime.Start + 0.01
-	step(pre, TickDT)
-	if err := pre.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0}); !errors.Is(err, ErrOvertime) {
-		t.Fatalf("upgrade in overtime: want ErrOvertime, got %v", err)
+	if tr.MaxHP <= s.cfg.Turret.MaxHP {
+		t.Fatal("turret HP track should raise max HP")
+	}
+	if s.turrets[SideA][0][0].MaxHP != s.cfg.Turret.MaxHP {
+		t.Fatal("slot-targeted upgrade leaked into the other slot")
 	}
 }
 
-func TestOvertimeDamageDecayAndFloor(t *testing.T) {
+func TestTurretFocusesNearestAndFlakHitsFlyers(t *testing.T) {
 	s := newTestSim(t)
-	s.Time = s.cfg.Overtime.Start
-	step(s, TickDT) // enter overtime
-	if s.TurretFactor != 1.0 {
-		t.Fatalf("factor right at overtime start = %v, want 1.0", s.TurretFactor)
+	giveCoins(s, SideA, 500)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+		t.Fatal(err)
 	}
-	step(s, 30)
-	if math.Abs(s.TurretFactor-0.85) > 1e-9 {
-		t.Fatalf("factor after 30s of overtime = %v, want 0.85", s.TurretFactor)
+	sol := &Unit{ID: 1, Type: Soldier, Side: SideB, Lane: 0, X: 20, HP: 75, MaxHP: 75, Damage: 10}
+	kni := &Unit{ID: 2, Type: Knight, Side: SideB, Lane: 0, X: 22, HP: 100, MaxHP: 100, Damage: 16}
+	drg := &Unit{ID: 3, Type: Dragon, Side: SideB, Lane: 0, X: 21, HP: 240, MaxHP: 240, Damage: 26}
+	s.units = []*Unit{sol, kni, drg}
+	s.nextUnitID = 4
+	step(s, 0.3) // one tower volley
+	if sol.HP >= 75 {
+		t.Fatalf("tower should focus the nearest ground unit, soldier hp=%v", sol.HP)
 	}
-	// Run far enough that the factor must hit the floor of 0.
-	s.Time = s.cfg.Overtime.Start
-	s.TurretFactor = 1.0
-	s.overtimeDecayIn = s.cfg.Overtime.Interval
-	step(s, 30*8)
-	if s.TurretFactor != 0.0 {
-		t.Fatalf("factor should floor at 0, got %v", s.TurretFactor)
+	if kni.HP != 100 || drg.HP != 240 || drg.Shield != 0 {
+		t.Fatalf("tower should ignore others without flak: knight=%v dragon=%v/%v", kni.HP, drg.HP, drg.Shield)
+	}
+
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 0, Track: TrackSpecial}); !errors.Is(err, ErrCouponRequired) {
+		t.Fatalf("flak without coupon: want ErrCouponRequired, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 0, Track: TrackSpecial, Entitled: true}); err != nil {
+		t.Fatalf("flak with coupon: %v", err)
+	}
+	sol.HP, kni.HP = 10000, 10000 // keep ground alive; dragon is the only target in range
+	drg.X = 15
+	sol.X, kni.X = 30, 32
+	shieldBefore := drg.Shield
+	step(s, 1.3)
+	if drg.Shield >= shieldBefore && drg.HP >= 240 {
+		t.Fatal("flak tower should hit flying units")
+	}
+}
+
+func TestSiegeHoldsInsideMinRange(t *testing.T) {
+	s := newTestSim(t)
+	sg := &Unit{ID: 1, Type: Siege, Side: SideA, Lane: 0, X: 50, HP: 85, MaxHP: 85, Damage: 28}
+	foe := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 55, HP: 75, MaxHP: 75, Damage: 10}
+	s.units = []*Unit{sg, foe}
+	s.nextUnitID = 3
+	step(s, 1.0)
+	if sg.X != 50 {
+		t.Fatalf("siege should hold position inside min range, x=%v", sg.X)
+	}
+	if foe.HP != 75 {
+		t.Fatalf("siege should not fire inside min range, foe hp=%v", foe.HP)
+	}
+}
+
+func TestKnightChargeBonusAfterMarching(t *testing.T) {
+	s := newTestSim(t)
+	s.cfg.Fog.ReconBounty = 0
+	kni := &Unit{ID: 1, Type: Knight, Side: SideA, Lane: 0, X: 40, HP: 100, MaxHP: 100, Damage: 16, DistanceMoved: 12, ChargeReady: true}
+	bow := &Unit{ID: 2, Type: Bowman, Side: SideB, Lane: 0, X: 42, HP: 48, MaxHP: 48, Damage: 13}
+	s.units = []*Unit{kni, bow}
+	s.nextUnitID = 3
+	step(s, 0.2)
+	// 16 * 1.5 (vs ranged) * 1.6 (charge) = 38.4
+	want := 48 - 16*1.5*1.6
+	if math.Abs(bow.HP-want) > 1e-6 {
+		t.Fatalf("charged hit left bowman at %v hp, want %v", bow.HP, want)
+	}
+	if kni.ChargeReady {
+		t.Fatal("charge should be spent after the first strike")
+	}
+}
+
+func TestReinforcementWallBuildUpgradeBlockThornsAndRebuild(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideB, 500)
+
+	if err := s.ApplyAction(Action{Kind: ActionBuildWall, Side: SideB, Lane: 0}); err != nil {
+		t.Fatalf("build wall: %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildWall, Side: SideB, Lane: 0}); !errors.Is(err, ErrWallExists) {
+		t.Fatalf("second wall: want ErrWallExists, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeWall, Side: SideB, Lane: 1}); !errors.Is(err, ErrNoWall) {
+		t.Fatalf("upgrade missing wall: want ErrNoWall, got %v", err)
+	}
+	w := s.walls[SideB][0]
+	if w == nil || w.HP != s.cfg.Wall.MaxHP || w.Shield != s.cfg.Wall.BaseShield {
+		t.Fatalf("unexpected wall state: %+v", w)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeWall, Side: SideB, Lane: 0}); err != nil {
+		t.Fatalf("upgrade wall: %v", err)
+	}
+	if w.Level != 1 || w.MaxHP <= s.cfg.Wall.MaxHP || w.MaxShield <= s.cfg.Wall.BaseShield {
+		t.Fatalf("wall upgrade did not boost stats: %+v", w)
+	}
+
+	sol := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: w.X - 1.0, HP: 75, MaxHP: 75, Damage: 10}
+	s.units = []*Unit{sol}
+	s.nextUnitID = 2
+	hpBefore := w.HP + w.Shield
+	solHPBefore := sol.HP
+	step(s, 1.5)
+	if w.HP+w.Shield >= hpBefore {
+		t.Fatal("soldier should damage enemy wall")
+	}
+	if sol.HP >= solHPBefore {
+		t.Fatal("upgraded wall thorns should damage melee attacker")
+	}
+	if sol.X > w.X {
+		t.Fatalf("ground soldier walked past alive enemy wall: sol.X=%v w.X=%v", sol.X, w.X)
+	}
+
+	// Destroyed walls clear immediately and can be rebuilt right away.
+	w.Shield = 0
+	w.HP = 1
+	step(s, 1.5)
+	if s.walls[SideB][0] != nil {
+		t.Fatal("destroyed wall should be cleared")
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildWall, Side: SideB, Lane: 0}); err != nil {
+		t.Fatalf("rebuild wall after destruction: %v", err)
+	}
+	if s.walls[SideB][0] == nil {
+		t.Fatal("expected rebuilt wall in Lane 0")
+	}
+}
+
+func TestNeutralGolemFightsAndAwardsBounty(t *testing.T) {
+	s := newTestSim(t)
+	s.anomalies = []*Anomaly{{
+		ID: 500, Kind: "neutral_golem", Lane: 1, X: 50, HP: 15, MaxHP: 160,
+		Damage: 15, Value: 50, LastHitBy: -1, ExpiresAt: 10000,
+	}}
+	sol := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 1, X: 49, HP: 75, MaxHP: 75, Damage: 20}
+	s.units = []*Unit{sol}
+	s.nextUnitID = 2
+
+	coinsBefore := coinBalance(s, SideA)
+	step(s, 1.0)
+	if len(s.anomalies) != 0 {
+		t.Fatal("expected neutral golem to be slain and removed")
+	}
+	if got := coinBalance(s, SideA) - coinsBefore; got != 50 {
+		t.Fatalf("golem bounty = %d, want 50", got)
+	}
+}
+
+func TestBreachTakesLifeAndPaysBounty(t *testing.T) {
+	s := newTestSim(t)
+	s.SetLives(2)
+	s.cfg.Fog.ReconBounty = 0
+	s.units = []*Unit{{
+		ID: 1, Type: Knight, Side: SideA, Lane: 2, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16,
+	}}
+	s.nextUnitID = 2
+	coinsBefore := coinBalance(s, SideA)
+	step(s, 0.5)
+	if s.Finished {
+		t.Fatal("match should continue with a life remaining")
+	}
+	if s.players[SideB].Lives != 1 {
+		t.Fatalf("defender lives = %d, want 1", s.players[SideB].Lives)
+	}
+	if got := coinBalance(s, SideA) - coinsBefore; got != s.cfg.Breach.BreachBounty {
+		t.Fatalf("breach bounty = %d, want %d", got, s.cfg.Breach.BreachBounty)
+	}
+	if s.players[SideB].Lives == 1 && coinBalance(s, SideB) != s.cfg.StartCoins+s.cfg.Breach.BreachComebackCoins {
+		t.Fatalf("defender should get comeback coins, has %d", coinBalance(s, SideB))
+	}
+}
+
+func TestBreachEndsMatchAtZeroLives(t *testing.T) {
+	s := newTestSim(t)
+	s.units = []*Unit{{
+		ID: 1, Type: Knight, Side: SideA, Lane: 2, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16,
+	}}
+	step(s, 0.5)
+	if !s.Finished || s.Winner != SideA || s.WinLane != 2 {
+		t.Fatalf("expected SideA breach in lane 2, got finished=%v winner=%d lane=%d", s.Finished, s.Winner, s.WinLane)
+	}
+}
+
+func TestSimultaneousBreachDraw(t *testing.T) {
+	s := newTestSim(t)
+	s.units = []*Unit{
+		{ID: 1, Type: Knight, Side: SideA, Lane: 0, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
+		{ID: 2, Type: Knight, Side: SideB, Lane: 1, X: 0.5, HP: 100, MaxHP: 100, Damage: 16},
+	}
+	step(s, 0.5)
+	if !s.Finished || !s.Draw || s.Winner != NoSide {
+		t.Fatalf("same-tick breach should draw, got finished=%v draw=%v winner=%d", s.Finished, s.Draw, s.Winner)
 	}
 }
 
 func TestResignEndsMatch(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 100)
-	s.Resign(SideB) // Red forfeits
-	if !s.Finished {
-		t.Fatal("resign should finish the match")
-	}
-	if s.Draw || s.Winner != SideA {
-		t.Fatalf("winner = %d draw=%v, want SideA", s.Winner, s.Draw)
-	}
-	if s.WinLane != -1 {
-		t.Fatalf("resign win should not credit a lane, got %d", s.WinLane)
-	}
-	// Resigning after the match ended is a no-op.
-	s.Resign(SideA)
-	if s.Winner != SideA {
-		t.Fatal("resign changed the winner of a finished match")
+	s.Resign(SideB)
+	if !s.Finished || s.Winner != SideA || s.Draw {
+		t.Fatalf("resign failed: finished=%v winner=%d draw=%v", s.Finished, s.Winner, s.Draw)
 	}
 }
 
-func TestSoldierMarchesAndBreachWins(t *testing.T) {
+func TestBreachesWinModeAccumulatesDistinctLanes(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 10000)
-	// Spam soldiers down lane 3; no defenders exist.
-	for i := 0; i < 3; i++ {
-		if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 3, Unit: Soldier}); err != nil {
-			t.Fatal(err)
-		}
+	s.SetWinMode(WinModeBreaches, 3)
+
+	// Two distinct lanes (even with two units in lane 0): no win, no life loss.
+	s.units = []*Unit{
+		{ID: 1, Type: Knight, Side: SideA, Lane: 0, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
+		{ID: 2, Type: Knight, Side: SideA, Lane: 0, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
+		{ID: 3, Type: Knight, Side: SideA, Lane: 1, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
 	}
-	for i := 0; i < 60*20 && !s.Finished; i++ {
-		s.Step(TickDT)
+	s.nextUnitID = 4
+	step(s, 0.5)
+	if s.Finished {
+		t.Fatal("2 of 3 lanes should not win")
 	}
-	if !s.Finished {
-		t.Fatal("match did not finish")
+	if s.countBreaches(SideA) != 2 {
+		t.Fatalf("breaches = %d, want 2", s.countBreaches(SideA))
 	}
-	if s.Draw || s.Winner != SideA {
-		t.Fatalf("winner = %d draw=%v, want side A", s.Winner, s.Draw)
+	if s.players[SideB].Lives != 1 {
+		t.Fatalf("breaches mode should not touch lives, got %d", s.players[SideB].Lives)
 	}
-	if s.WinLane != 3 {
-		t.Fatalf("win lane = %d, want 3", s.WinLane)
+
+	// Progress persists: a third lane any time later wins the match.
+	step(s, 5)
+	s.units = []*Unit{
+		{ID: 10, Type: Knight, Side: SideA, Lane: 4, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
+	}
+	s.nextUnitID = 11
+	step(s, 0.5)
+	if !s.Finished || s.Winner != SideA || s.Draw {
+		t.Fatalf("expected SideA victory on 3rd distinct lane, got finished=%v winner=%d draw=%v", s.Finished, s.Winner, s.Draw)
+	}
+	snap := s.Snapshot()
+	if snap.Players[SideA].Breaches != 3 || !snap.Players[SideA].BreachedLanes[4] {
+		t.Fatalf("breach snapshot wrong: %+v", snap.Players[SideA])
 	}
 }
 
-func TestSimultaneousBreachIsDraw(t *testing.T) {
+func TestMaxBreachLootsPerLanePerMatch(t *testing.T) {
 	s := newTestSim(t)
-	// Place a nearly-breaching soldier for each side so both cross in one tick.
-	s.units = append(s.units,
-		&Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 2, X: FieldLength - 0.1, HP: 50, MaxHP: 50, Damage: 9},
-		&Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 2, X: 0.1, HP: 50, MaxHP: 50, Damage: 9},
-	)
-	s.nextUnitID = 3
-	s.Step(TickDT)
-	if !s.Finished {
-		t.Fatal("expected match to end")
+	s.SetWinMode(WinModeBreaches, 5)
+	s.SetMaxBreachLoots(3)
+	s.cfg.Fog.ReconBounty = 0
+
+	coinsBefore := coinBalance(s, SideA)
+	for i := 0; i < 6; i++ {
+		s.units = append(s.units, &Unit{
+			ID: int64(i + 1), Type: Knight, Side: SideA, Lane: 0, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16,
+		})
 	}
-	if !s.Draw {
-		t.Fatalf("expected draw, got winner=%d", s.Winner)
+	for i := 0; i < 2; i++ {
+		s.units = append(s.units, &Unit{
+			ID: int64(10 + i), Type: Knight, Side: SideA, Lane: 1, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16,
+		})
+	}
+	s.nextUnitID = 20
+	step(s, 0.5)
+
+	// Lane 0 capped at 3 loots, lane 1 pays 2: total 5x bounty.
+	want := 5 * s.cfg.Breach.BreachBounty
+	if got := coinBalance(s, SideA) - coinsBefore; got != want {
+		t.Fatalf("breach loot = %d, want %d", got, want)
+	}
+	if s.Finished {
+		t.Fatal("only 2 of 5 lanes breached: match must continue")
+	}
+
+	// The cap persists for the whole match (no per-round reset).
+	step(s, 5)
+	coinsLater := coinBalance(s, SideA)
+	s.units = []*Unit{
+		{ID: 30, Type: Knight, Side: SideA, Lane: 0, X: FieldLength - 0.5, HP: 100, MaxHP: 100, Damage: 16},
+	}
+	s.anomalyIn, s.windfallIn, s.incomeIn = 9999, 9999, 9999 // isolate the loot
+	step(s, 0.5)
+	if got := coinBalance(s, SideA) - coinsLater; got != 0 {
+		t.Fatalf("capped lane paid again: +%d", got)
+	}
+}
+
+func TestOvertimeLocksBuildsDecaysTowersAndBoostsBreachers(t *testing.T) {
+	s := newTestSim(t)
+	giveCoins(s, SideA, 500)
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+		t.Fatal(err)
+	}
+	s.Time = s.cfg.Overtime.Start
+	step(s, 0.2)
+	if !s.Overtime {
+		t.Fatal("expected overtime to begin")
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 1}); !errors.Is(err, ErrOvertime) {
+		t.Fatalf("overtime build: want ErrOvertime, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 0, Track: TrackDamage}); !errors.Is(err, ErrOvertime) {
+		t.Fatalf("overtime upgrade: want ErrOvertime, got %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionBuildWall, Side: SideA, Lane: 1}); !errors.Is(err, ErrOvertime) {
+		t.Fatalf("overtime wall: want ErrOvertime, got %v", err)
+	}
+	// Troops and unit upgrades keep working in overtime.
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Soldier}); err != nil {
+		t.Fatalf("overtime deploy: %v", err)
+	}
+
+	s.overtimeDecayIn = 0.01
+	step(s, 0.1)
+	if s.TurretFactor >= 1.0 {
+		t.Fatalf("turret factor should decay, got %v", s.TurretFactor)
+	}
+	if s.OvertimeSteps != 1 {
+		t.Fatalf("overtime steps = %d, want 1", s.OvertimeSteps)
+	}
+	mult := s.counterMultiplier(Soldier, ClassStructure, map[UpgradeTrack]int{})
+	want := 0.65 * (1 + s.cfg.Overtime.StructureBonus)
+	if math.Abs(mult-want) > 1e-9 {
+		t.Fatalf("overtime structure multiplier = %v, want %v", mult, want)
 	}
 }
 
 func TestTimeLimitDraw(t *testing.T) {
 	s := newTestSim(t)
-	s.Time = s.cfg.Overtime.DrawAt - 0.001
-	s.Step(TickDT)
+	s.Time = s.cfg.Overtime.DrawAt - 0.1
+	step(s, 0.2)
 	if !s.Finished || !s.Draw {
-		t.Fatalf("expected draw at time limit, finished=%v draw=%v", s.Finished, s.Draw)
+		t.Fatalf("time limit should draw, got finished=%v draw=%v", s.Finished, s.Draw)
 	}
 }
 
-func TestRamPrioritizesTurretOverUnit(t *testing.T) {
+func TestFogHidesFarEnemiesAndReconPaysOnce(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	// Enemy turret in lane 0 at x=90; enemy soldier nearby at x=88.
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideA, Lane: 0, Unit: Soldier}); err != nil {
 		t.Fatal(err)
 	}
-	enemy := &Unit{ID: 900, Type: Soldier, Side: SideB, Lane: 0, X: 88, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, enemy)
-	// Our ram in striking distance.
-	ram := &Unit{ID: 901, Type: Ram, Side: SideA, Lane: 0, X: 88.6, HP: 170, MaxHP: 170, Damage: 4}
-	s.units = append(s.units, ram)
-	s.nextUnitID = 902
-	ram.Cooldown = 0
-	s.stepUnits(TickDT)
-	if enemy.HP != 70 {
-		t.Fatalf("ram chewed on the soldier (hp=%v); should prioritize the turret", enemy.HP)
-	}
-	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
-		t.Fatal("ram did not damage the turret")
-	}
-}
-
-func TestSoldierIgnoresTurret(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
+	if err := s.ApplyAction(Action{Kind: ActionDeploy, Side: SideB, Lane: 0, Unit: Knight}); err != nil {
 		t.Fatal(err)
 	}
-	// Move side A's turret hostile: build for side A, command a side B soldier next to it.
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 1})
-	soldier := &Unit{ID: 950, Type: Soldier, Side: SideA, Lane: 1, X: FieldLength - s.cfg.Turret.PadX - 1, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, soldier)
-	s.nextUnitID = 951
-	hpBefore := s.turrets[SideB][1][0].HP
-	step(s, 1.0)
-	if s.turrets[SideB][1][0].HP != hpBefore {
-		t.Fatal("soldier damaged a turret; soldiers must ignore turrets")
+	snapA := s.SnapshotFor(SideA)
+	if len(snapA.Units) != 1 || snapA.Units[0].Side != SideA {
+		t.Fatalf("SideA should see only its own unit, got %+v", snapA.Units)
+	}
+
+	// March the soldier next to the knight: it appears and pays recon once.
+	s.units[0].X = 85
+	coinsBefore := coinBalance(s, SideA)
+	step(s, 0.05)
+	snapA = s.SnapshotFor(SideA)
+	if len(snapA.Units) != 2 {
+		t.Fatalf("knight should be visible near the soldier, got %d units", len(snapA.Units))
+	}
+	if got := coinBalance(s, SideA) - coinsBefore; got != s.cfg.Fog.ReconBounty {
+		t.Fatalf("recon bounty = %d, want %d", got, s.cfg.Fog.ReconBounty)
+	}
+	if s.players[SideA].ReconEarned != s.cfg.Fog.ReconBounty {
+		t.Fatalf("ReconEarned = %d", s.players[SideA].ReconEarned)
+	}
+	step(s, 0.5)
+	if coinBalance(s, SideA) != coinsBefore+s.cfg.Fog.ReconBounty {
+		t.Fatal("recon bounty must pay exactly once per enemy unit")
 	}
 }
 
-func TestSiegeMinRangeHolds(t *testing.T) {
+func TestScoutRevealsLaneThenExpires(t *testing.T) {
 	s := newTestSim(t)
-	// Enemy right in front of the siege engine, inside MinRange.
-	siege := &Unit{ID: 1, Type: Siege, Side: SideA, Lane: 0, X: 50, HP: 85, MaxHP: 85, Damage: 30}
-	enemy := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 55, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, siege, enemy)
+	s.SetHideLuck(true)
+	s.anomalies = []*Anomaly{{
+		ID: 1, Kind: "loot_buff", Lane: 3, X: 60, Radius: 3.2, Value: 35, ExpiresAt: 10000,
+	}}
+	sg := &Unit{ID: 2, Type: Siege, Side: SideB, Lane: 3, X: 90, HP: 85, MaxHP: 85, Damage: 28}
+	s.units = []*Unit{sg}
 	s.nextUnitID = 3
-	step(s, 1.0)
-	if enemy.HP != 70 {
-		t.Fatalf("siege attacked a unit it cannot target (enemy hp=%v)", enemy.HP)
+
+	snapA := s.SnapshotFor(SideA)
+	if len(snapA.Anomalies) != 0 || len(snapA.Units) != 0 {
+		t.Fatalf("far lane should start hidden, got %+v %+v", snapA.Anomalies, snapA.Units)
 	}
-	if siege.X != 50 {
-		t.Fatalf("siege moved while too close to enemy: x=%v", siege.X)
+	if err := s.ApplyAction(Action{Kind: ActionScoutLane, Side: SideA, Lane: 3}); err != nil {
+		t.Fatalf("scout: %v", err)
 	}
-	// Pull the enemy back into the kill window: a siege outranges melee but
-	// STILL cannot target units — nothing happens.
-	enemy.X = 70
-	step(s, 2.5)
-	if enemy.HP != 70 {
-		t.Fatalf("siege damaged a unit it cannot target (enemy hp=%v)", enemy.HP)
+	if err := s.ApplyAction(Action{Kind: ActionScoutLane, Side: SideA, Lane: 3}); !errors.Is(err, ErrAlreadyScouted) {
+		t.Fatalf("double scout: want ErrAlreadyScouted, got %v", err)
 	}
-	// A turret inside the band absolutely is a target.
-	giveCoins(s, SideB, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
-		t.Fatal(err)
+	snapA = s.SnapshotFor(SideA)
+	if !snapA.ScoutedLanes[3] {
+		t.Fatal("lane 3 should read as scouted")
 	}
-	// Turret spawns at x=FieldLength-PadX=90, siege at ~50+speed... it advanced
-	// while unopposed? No: step() advances it only when no target is in band.
-	// Just check that when in band it fires.
-	siege.X = 70
-	step(s, 2.5)
-	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
-		t.Fatal("siege did not fire at a turret inside its range band")
+	if len(snapA.Anomalies) != 1 || len(snapA.Units) != 1 {
+		t.Fatalf("scout should reveal lane 3, got %+v %+v", snapA.Anomalies, snapA.Units)
+	}
+	step(s, s.cfg.Fog.ScoutDuration+0.2)
+	snapA = s.SnapshotFor(SideA)
+	if snapA.ScoutedLanes[3] {
+		t.Fatal("scout flare should expire")
+	}
+	if len(snapA.Anomalies) != 0 || len(snapA.Units) != 0 {
+		t.Fatalf("lane 3 should be hidden again, got %+v %+v", snapA.Anomalies, snapA.Units)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionScoutLane, Side: SideA, Lane: 3}); err != nil {
+		t.Fatalf("re-scout after expiry: %v", err)
+	}
+	if err := s.ApplyAction(Action{Kind: ActionScoutLane, Side: SideA, Lane: 9}); !errors.Is(err, ErrInvalidLane) {
+		t.Fatalf("bad lane: want ErrInvalidLane, got %v", err)
 	}
 }
 
-func TestSiegeOutrangesTurret(t *testing.T) {
+func TestHideLuckConcealsUnrevealedAnomalies(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	giveCoins(s, SideB, 1000)
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0})
-	siege := &Unit{ID: 1, Type: Siege, Side: SideA, Lane: 0, X: 90 - s.cfg.Turret.PadX - 20, HP: 85, MaxHP: 85, Damage: 30}
-	s.units = append(s.units, siege)
-	s.nextUnitID = 2
-	step(s, 6.0)
-	if s.turrets[SideB][0][0] == nil {
-		t.Fatal("turret destroyed too fast or missing")
+	s.SetHideLuck(true)
+	s.anomalies = []*Anomaly{{
+		ID: 1, Kind: "loot_coins", Lane: 1, X: 60, Radius: 3.2, Value: 35, ExpiresAt: 10000,
+	}}
+	snap := s.SnapshotFor(SideA)
+	if !snap.HideLuck {
+		t.Fatal("expected snap.HideLuck = true")
 	}
-	if s.turrets[SideB][0][0].HP >= s.cfg.Turret.MaxHP {
-		t.Fatal("siege dealt no damage to turret it outranges")
+	if len(snap.Anomalies) != 0 || snap.HiddenLuckCount != 1 {
+		t.Fatalf("expected 1 hidden anomaly, got %+v count=%d", snap.Anomalies, snap.HiddenLuckCount)
 	}
-	if siege.HP < siege.MaxHP {
-		// Turret range 13; siege at 20+ distance should not have been hit.
-		t.Fatalf("turret shot a siege engine that was out of range (hp=%v)", siege.HP)
+	s.SetHideLuck(false)
+	snap = s.SnapshotFor(SideA)
+	if len(snap.Anomalies) != 1 || snap.HiddenLuckCount != 0 {
+		t.Fatalf("expected anomaly visible with HideLuck off, got %+v", snap.Anomalies)
 	}
 }
 
-func TestShotFxEmittedForRangedAndTurrets(t *testing.T) {
-	s := newTestSim(t)
-	// Bowman vs enemy in lane 0.
-	bowman := &Unit{ID: 1, Type: Bowman, Side: SideA, Lane: 0, X: 50, HP: 45, MaxHP: 45, Damage: 12}
-	enemy := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 60, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, bowman, enemy)
-	s.nextUnitID = 3
-	s.stepUnits(TickDT)
-	fx := s.DrainFx()
-	found := false
-	for _, f := range fx {
-		if f.Kind == "shot" && f.Unit == "bowman" && f.FromX == 50 {
-			found = true
-		}
+func TestGoldLootUncontestedClaimAndContestedWait(t *testing.T) {
+	// Uncontested: first army to touch the loot takes it.
+	s1 := newTestSim(t)
+	s1.anomalies = []*Anomaly{{ID: 100, Kind: "loot_coins", Lane: 1, X: 50, Radius: 3.2, Value: 35, ExpiresAt: 10000}}
+	s1.units = []*Unit{{ID: 1, Type: Soldier, Side: SideA, Lane: 1, X: 49, HP: 75, MaxHP: 75, Damage: 10}}
+	s1.nextUnitID = 2
+	coinsA := coinBalance(s1, SideA)
+	step(s1, 0.2)
+	if len(s1.anomalies) != 0 {
+		t.Fatal("expected uncontested loot to be claimed on touch")
 	}
-	if !found {
-		t.Fatalf("expected a bowman shot fx, got %+v", fx)
+	if coinBalance(s1, SideA) != coinsA+35 {
+		t.Fatalf("loot claim paid %d, want 35", coinBalance(s1, SideA)-coinsA)
 	}
 
-	// Soldier (melee) attacking: expect "melee", not "shot".
+	// Contested: both armies near the loot -> it waits for a winner.
 	s2 := newTestSim(t)
-	sa := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 1, X: 50, HP: 70, MaxHP: 70, Damage: 9}
-	sb := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 1, X: 51, HP: 70, MaxHP: 70, Damage: 9}
-	s2.units = append(s2.units, sa, sb)
+	s2.anomalies = []*Anomaly{{ID: 200, Kind: "loot_coins", Lane: 2, X: 50, Radius: 3.2, Value: 40, ExpiresAt: 10000}}
+	solA := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 2, X: 49, HP: 200, MaxHP: 200, Damage: 25}
+	solB := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 2, X: 51, HP: 30, MaxHP: 30, Damage: 5}
+	s2.units = []*Unit{solA, solB}
 	s2.nextUnitID = 3
-	s2.stepUnits(TickDT)
-	for _, f := range s2.DrainFx() {
-		if f.Unit == "soldier" && f.Kind != "melee" {
-			t.Fatalf("soldier attack should be melee fx, got %+v", f)
-		}
+	coinsBeforeA := coinBalance(s2, SideA)
+	step(s2, 0.1)
+	if len(s2.anomalies) != 1 || !s2.anomalies[0].Contested {
+		t.Fatal("expected loot to be contested while both armies are near")
+	}
+	step(s2, 1.2) // SideA kills SideB's soldier, then claims
+	if len(s2.anomalies) != 0 {
+		t.Fatal("expected contested loot to be claimed once SideA won the fight")
+	}
+	if coinBalance(s2, SideA) < coinsBeforeA+40 {
+		t.Fatalf("expected SideA to receive +40c loot, got +%d", coinBalance(s2, SideA)-coinsBeforeA)
 	}
 }
 
-func TestSupplyCacheSpawnsClaimExpire(t *testing.T) {
+func TestMudSlowsAndSpikesBurnGroundOnly(t *testing.T) {
 	s := newTestSim(t)
-	// Jump just before the first scheduled cache (45s).
-	s.Time = 45 - TickDT
-	step(s, TickDT)
-	if len(s.caches) != 1 {
-		t.Fatalf("expected 1 cache after 45s, got %d", len(s.caches))
+	s.anomalies = []*Anomaly{
+		{ID: 1, Kind: "hazard_mud", Lane: 0, X: 50, Radius: 8.0, ExpiresAt: 10000},
+		{ID: 2, Kind: "hazard_spikes", Lane: 1, X: 50, Radius: 6.0, TickIn: 0.1, ExpiresAt: 10000},
 	}
-	cache := s.caches[0]
-	if cache.Lane < 0 || cache.Lane >= NumLanes {
-		t.Fatalf("cache lane out of range: %d", cache.Lane)
+	if !s.inMudHazard(0, 43.0) || s.inMudHazard(0, 41.0) {
+		t.Fatal("inMudHazard should respect variable radius 8.0 around X=50")
 	}
-	// A blue soldier standing on it claims it.
-	s.units = append(s.units, &Unit{ID: 900, Type: Soldier, Side: SideA, Lane: cache.Lane, X: cache.X, HP: 70, MaxHP: 70, Damage: 9})
-	before := coinBalance(s, SideA)
-	s.stepCaches()
-	if len(s.caches) != 0 {
-		t.Fatal("cache should be collected by the nearby unit")
+	ground := &Unit{ID: 10, Type: Soldier, Side: SideA, Lane: 1, X: 48, HP: 75, MaxHP: 75, Damage: 10}
+	flyer := &Unit{ID: 11, Type: Dragon, Side: SideA, Lane: 1, X: 48, HP: 240, MaxHP: 240, Damage: 26}
+	s.units = []*Unit{ground, flyer}
+	s.nextUnitID = 12
+	step(s, 0.5)
+	if ground.HP >= 75 {
+		t.Fatalf("spike field should damage ground unit over time, hp=%v", ground.HP)
 	}
-	if got := coinBalance(s, SideA) - before; got != cache.Amount {
-		t.Fatalf("cache paid %d, want %d", got, cache.Amount)
-	}
-	// A second cache: let it expire untouched.
-	s.nextCacheIdx = 1
-	s.Time = s.cfg.Cache.Times[1] - TickDT
-	step(s, TickDT)
-	if len(s.caches) != 1 {
-		t.Fatalf("expected second cache, got %d", len(s.caches))
-	}
-	s.Time = s.caches[0].ExpiresAt + 0.01
-	s.stepCaches()
-	if len(s.caches) != 0 {
-		t.Fatal("expired cache should vanish")
+	if flyer.HP != 240 {
+		t.Fatalf("spike field should not damage flying unit, hp=%v", flyer.HP)
 	}
 }
 
-func TestDoubleKillStreakAndStats(t *testing.T) {
+func TestLaneDominanceIsLiveAndSpeedsHolders(t *testing.T) {
 	s := newTestSim(t)
-	cfg := DefaultBalance()
-	_ = cfg
-	// Two 1-HP enemies adjacent to one blue soldier.
-	s.units = append(s.units,
-		&Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 50, HP: 70, MaxHP: 70, Damage: 9, LastHitBy: -1},
-		&Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 50.5, HP: 1, MaxHP: 70, Damage: 9, LastHitBy: -1},
-		&Unit{ID: 3, Type: Soldier, Side: SideB, Lane: 0, X: 49.5, HP: 1, MaxHP: 70, Damage: 9, LastHitBy: -1},
-	)
+	dom := &Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 10, HP: 75, MaxHP: 75, Damage: 10}
+	conA := &Unit{ID: 2, Type: Soldier, Side: SideA, Lane: 1, X: 10, HP: 75, MaxHP: 75, Damage: 10}
+	conB := &Unit{ID: 3, Type: Soldier, Side: SideB, Lane: 1, X: 90, HP: 75, MaxHP: 75, Damage: 10}
+	s.units = []*Unit{dom, conA, conB}
 	s.nextUnitID = 4
-	step(s, 2.5) // soldier needs ~1s between attacks to land both kills
-	snap := s.Snapshot()
-	if snap.Players[0].Kills != 2 {
-		t.Fatalf("blue kills = %d, want 2", snap.Players[0].Kills)
-	}
-	if snap.Players[1].UnitsLost != 2 {
-		t.Fatalf("red units lost = %d, want 2", snap.Players[1].UnitsLost)
-	}
-	if snap.Players[0].DamageDealt <= 0 {
-		t.Fatal("blue damage dealt should be > 0")
-	}
-	found := false
-	for _, e := range snap.Events {
-		if e.Kind == "streak" && e.Amount >= 2 {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("expected a streak event in %+v", snap.Events)
-	}
-}
-
-func TestTurretDamageTracked(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	giveCoins(s, SideB, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideB, Lane: 0}); err != nil {
-		t.Fatal(err)
-	}
-	ram := &Unit{ID: 1, Type: Ram, Side: SideA, Lane: 0, X: 88, HP: 170, MaxHP: 170, Damage: 4, LastHitBy: -1}
-	s.units = append(s.units, ram)
-	s.nextUnitID = 2
-	ram.Cooldown = 0
 	step(s, 1.0)
-	snap := s.Snapshot()
-	if snap.Players[0].DamageDealt <= 0 {
-		t.Fatal("ram damage vs turret was not tracked")
+	if s.laneDominance[0] != SideA {
+		t.Fatalf("lane 0 dominance = %d, want SideA", s.laneDominance[0])
+	}
+	if s.laneDominance[1] != NoSide {
+		t.Fatalf("lane 1 dominance = %d, want NoSide", s.laneDominance[1])
+	}
+	// Dominant army marches 10% faster: 5.2*1.1 vs 5.2 over 1s.
+	if math.Abs((dom.X-10)-5.2*1.1) > 0.3 {
+		t.Fatalf("dominant soldier moved %v, want ~5.72", dom.X-10)
+	}
+	if math.Abs((conA.X-10)-5.2) > 0.3 {
+		t.Fatalf("contested soldier moved %v, want ~5.2", conA.X-10)
 	}
 }
 
-func TestFirstBloodEventOnce(t *testing.T) {
-	s := newTestSim(t)
-	s.units = append(s.units,
-		&Unit{ID: 1, Type: Soldier, Side: SideA, Lane: 0, X: 50, HP: 1, MaxHP: 70, Damage: 0},
-		&Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 1, X: 60, HP: 1, MaxHP: 70, Damage: 0},
-	)
-	s.units[0].HP = 0 // dies now
-	s.units[1].HP = 0
-	s.nextUnitID = 3
-	s.removeDead()
-	events := s.DrainEvents()
-	count := 0
-	for _, e := range events {
-		if e.Kind == "firstBlood" {
-			count++
+func TestSoakRandomPlayEndsCleanly(t *testing.T) {
+	// Seeded chaos match: both sides spam every action. The sim must never
+	// panic, never mint negative coins, and always finish by the time limit.
+	s := New(1234, DefaultBalance())
+	rng := s.rng
+	stock := []UnitType{Soldier, Bowman, Knight, Shieldbearer, Mage, Ram, Siege}
+	tracks := []UpgradeTrack{TrackDamage, TrackAttackSpeed, TrackHP, TrackShield}
+	for tick := 0; tick < 13000 && !s.Finished; tick++ {
+		if tick%20 == 0 {
+			for side := 0; side < 2; side++ {
+				switch rng.Intn(8) {
+				case 0, 1, 2:
+					_ = s.ApplyAction(Action{Kind: ActionDeploy, Side: side, Lane: rng.Intn(NumLanes), Unit: stock[rng.Intn(len(stock))]})
+				case 3:
+					_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: side, Lane: rng.Intn(NumLanes)})
+				case 4:
+					_ = s.ApplyAction(Action{Kind: ActionBuildWall, Side: side, Lane: rng.Intn(NumLanes)})
+				case 5:
+					_ = s.ApplyAction(Action{Kind: ActionUpgradeUnit, Side: side, Unit: stock[rng.Intn(len(stock))], Track: tracks[rng.Intn(len(tracks))]})
+				case 6:
+					_ = s.ApplyAction(Action{Kind: ActionScoutLane, Side: side, Lane: rng.Intn(NumLanes)})
+				case 7:
+					_ = s.ApplyAction(Action{Kind: ActionBuildFactory, Side: side})
+				}
+			}
+		}
+		s.Step(TickDT)
+		for side := 0; side < 2; side++ {
+			if coinBalance(s, side) < 0 {
+				t.Fatalf("negative coins for side %d at tick %d", side, tick)
+			}
 		}
 	}
-	if count != 1 {
-		t.Fatalf("expected exactly one firstBlood event, got %d (%+v)", count, events)
+	if !s.Finished {
+		t.Fatal("chaos match should finish by the time limit")
 	}
+	_ = s.SnapshotPair() // fog snapshots must build on a finished match too
 }
 
-func TestTurretFocusesMostAdvancedTarget(t *testing.T) {
+func TestAnomalySpawnerRumorCapAndExpiry(t *testing.T) {
 	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0})
-	// Side A's turret sits at x = PadX and defends x=0; the dangerous B unit
-	// is the one with the lowest x (closest to A's breach line).
-	farFromBase := &Unit{ID: 1, Type: Soldier, Side: SideB, Lane: 0, X: s.cfg.Turret.PadX + 5, HP: 200, MaxHP: 200, Damage: 1}
-	nearBase := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: s.cfg.Turret.PadX + 2, HP: 200, MaxHP: 200, Damage: 1}
-	s.units = append(s.units, farFromBase, nearBase)
-	s.nextUnitID = 3
-	step(s, 1.2)
-	if nearBase.HP >= 200 {
-		t.Fatal("turret did not fire on the enemy nearest to its breach line")
+	if len(s.anomalies) != 0 {
+		t.Fatal("no anomalies should exist at match start")
 	}
-	if farFromBase.HP != 200 {
-		t.Fatal("turret failed to focus the most advanced enemy first")
+	step(s, 12.1)
+	if len(s.anomalies) != 1 {
+		t.Fatalf("expected first anomaly at 12s, got %d", len(s.anomalies))
 	}
-}
-
-func TestRamCannotDamageUnits(t *testing.T) {
-	s := newTestSim(t)
-	// Enemy soldier right next to the ram, no turrets anywhere: the ram must
-	// walk past it without attacking.
-	ram := &Unit{ID: 1, Type: Ram, Side: SideA, Lane: 0, X: 20, HP: 170, MaxHP: 170, Damage: 4, LastHitBy: -1}
-	soldier := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 21, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, ram, soldier)
-	s.nextUnitID = 3
-	ram.Cooldown = 0
-	step(s, 1.0)
-	if soldier.HP != 70 {
-		t.Fatalf("ram attacked a unit (hp=%v); rams may only target turrets", soldier.HP)
-	}
-	if ram.X == 20 {
-		t.Fatal("ram did not advance with no turret in range")
-	}
-}
-
-func TestSiegeCannotDamageUnits(t *testing.T) {
-	s := newTestSim(t)
-	// Enemy soldier well inside the siege's firing band, no turrets: no shots.
-	siege := &Unit{ID: 1, Type: Siege, Side: SideA, Lane: 0, X: 50, HP: 85, MaxHP: 85, Damage: 30}
-	soldier := &Unit{ID: 2, Type: Soldier, Side: SideB, Lane: 0, X: 65, HP: 70, MaxHP: 70, Damage: 9}
-	s.units = append(s.units, siege, soldier)
-	s.nextUnitID = 3
-	step(s, 2.5)
-	if soldier.HP != 70 {
-		t.Fatalf("siege attacked a unit (hp=%v); sieges may only target turrets", soldier.HP)
-	}
-}
-
-func TestTurretUpgradeTargetsSpecificSlot(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 0}); err != nil {
-		t.Fatal(err)
-	}
-	// Upgrade only slot 1.
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if got := s.turrets[SideA][0][0].Level; got != 0 {
-		t.Fatalf("slot 0 level = %d, want 0 (untouched)", got)
-	}
-	if got := s.turrets[SideA][0][1].Level; got != 1 {
-		t.Fatalf("slot 1 level = %d, want 1", got)
-	}
-	// Slot out of range is rejected.
-	if err := s.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 0, Slot: TurretSlots}); !errors.Is(err, ErrInvalidSlot) {
-		t.Fatalf("want ErrInvalidSlot, got %v", err)
-	}
-	// Upgrading an empty slot fails.
-	s2 := newTestSim(t)
-	giveCoins(s2, SideA, 1000)
-	if err := s2.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 3}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s2.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 3, Slot: 1}); !errors.Is(err, ErrNoTurret) {
-		t.Fatalf("want ErrNoTurret, got %v", err)
-	}
-	// Negative slot falls back to the lowest built slot.
-	if err := s2.ApplyAction(Action{Kind: ActionUpgradeTurret, Side: SideA, Lane: 3, Slot: -1}); err != nil {
-		t.Fatal(err)
-	}
-	if got := s2.turrets[SideA][3][0].Level; got != 1 {
-		t.Fatalf("default-slot upgrade hit the wrong turret: level %d", got)
-	}
-}
-
-func TestTurretCostIsSeventy(t *testing.T) {
-	s := newTestSim(t)
-	if got := s.Balance().Turret.Cost; got != 70 {
-		t.Fatalf("turret cost = %d, want 70", got)
-	}
-}
-
-func TestSnapshotReportsTurretSlots(t *testing.T) {
-	s := newTestSim(t)
-	giveCoins(s, SideA, 1000)
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2})
-	_ = s.ApplyAction(Action{Kind: ActionBuildTurret, Side: SideA, Lane: 2})
-	snap := s.Snapshot()
-	var slots []int
-	for _, tr := range snap.Turrets {
-		if tr.Side == SideA && tr.Lane == 2 {
-			slots = append(slots, tr.Slot)
+	rumor := false
+	for _, ev := range drainedEvents(s) {
+		if ev.Kind == "supply" {
+			rumor = true
 		}
 	}
-	if len(slots) != 2 || slots[0] != 0 || slots[1] != 1 {
-		t.Fatalf("snapshot slots = %v, want [0 1]", slots)
+	if !rumor {
+		t.Fatal("expected a rumor event for the anomaly")
+	}
+	s.anomalies[0].ExpiresAt = s.Time - 1
+	step(s, 0.1)
+	if len(s.anomalies) != 0 {
+		t.Fatal("expired anomaly should be removed")
+	}
+	for i := 0; i < 200; i++ {
+		step(s, 1.0)
+		if len(s.anomalies) > s.cfg.Anomaly.MaxAlive {
+			t.Fatalf("alive anomalies %d exceed cap %d", len(s.anomalies), s.cfg.Anomaly.MaxAlive)
+		}
+		if s.Finished {
+			break
+		}
 	}
 }

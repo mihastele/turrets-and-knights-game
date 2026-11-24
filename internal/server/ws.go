@@ -24,6 +24,7 @@ type clientMsg struct {
 	Type   string `json:"type"`
 	Lane   int    `json:"lane"`
 	Unit   string `json:"unit"`
+	Track  string `json:"track"` // upgrade track: damage, attackSpeed, hp, shield, special
 	Emote  string `json:"emote"`
 	Effect string `json:"effect"` // coupon field effect id for "fieldEffect"
 	Slot   *int   `json:"slot"`   // turret slot for upgradeTurret (omitted = lowest built slot); ignored for turret builds (auto)
@@ -225,6 +226,15 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 	case "turret":
 		action.Kind = sim.ActionBuildTurret
 		action.Lane = msg.Lane
+	case "wall":
+		action.Kind = sim.ActionBuildWall
+		action.Lane = msg.Lane
+	case "upgradeWall":
+		action.Kind = sim.ActionUpgradeWall
+		action.Lane = msg.Lane
+	case "scout":
+		action.Kind = sim.ActionScoutLane
+		action.Lane = msg.Lane
 	case "factory":
 		action.Kind = sim.ActionBuildFactory
 	case "upgradeFactory":
@@ -232,9 +242,11 @@ func (s *Server) handleClientMsg(code string, pl *player, conn *wsConn, msg clie
 	case "upgradeUnit":
 		action.Kind = sim.ActionUpgradeUnit
 		action.Unit = sim.UnitType(msg.Unit)
+		action.Track = sim.UpgradeTrack(msg.Track)
 	case "upgradeTurret":
 		action.Kind = sim.ActionUpgradeTurret
 		action.Lane = msg.Lane
+		action.Track = sim.UpgradeTrack(msg.Track)
 	case "fieldEffect":
 		action.Kind = sim.ActionFieldEffect
 		action.Lane = msg.Lane
@@ -377,7 +389,10 @@ func (s *Server) tryStartLocked(rm *room) {
 	rematch := rm.rematch[0] && rm.rematch[1]
 	if rematch {
 		rm.game = sim.New(randomSeed(), s.balance)
+		rm.game.SetWinMode(rm.winMode, rm.breachesToWin)
 		rm.game.SetLives(rm.lives)
+		rm.game.SetMaxBreachLoots(rm.maxBreachLoots)
+		rm.game.SetHideLuck(rm.hideLuck)
 		rm.snapEvery = 0
 		rm.rematch = [2]bool{}
 	}
@@ -507,8 +522,12 @@ func (s *Server) broadcastSnapshotLocked(rm *room) {
 	if rm.game == nil {
 		return
 	}
-	snap := rm.game.Snapshot()
-	s.broadcastLocked(rm, snap)
+	pair := rm.game.SnapshotPair()
+	for seat, p := range rm.players {
+		if p != nil && p.conn != nil {
+			s.sendToLocked(p.conn, pair[seat])
+		}
+	}
 }
 
 func (s *Server) writePump(c *wsConn) {

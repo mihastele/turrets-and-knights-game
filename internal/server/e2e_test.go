@@ -83,6 +83,12 @@ type snapshot struct {
 	WinLane      int     `json:"winLane"`
 	Overtime     bool    `json:"overtime"`
 	TurretFactor float64 `json:"turretFactor"`
+	Units        []struct {
+		Side int     `json:"side"`
+		Lane int     `json:"lane"`
+		X    float64 `json:"x"`
+		Type string  `json:"type"`
+	} `json:"units"`
 }
 
 func readSnapshot(t *testing.T, c *websocket.Conn, timeout time.Duration) snapshot {
@@ -200,16 +206,50 @@ func TestEndToEndMatch(t *testing.T) {
 		t.Fatal("expected an error message for invalid lane")
 	}
 
-	// Deploy a soldier down lane 0 (the enemy never defends).
+	// Deploy a soldier down lane 0: it marches immediately (real time).
 	if err := wsA.WriteJSON(map[string]any{"type": "deploy", "unit": "soldier", "lane": 0}); err != nil {
 		t.Fatal(err)
 	}
+	deadline = time.Now().Add(5 * time.Second)
+	var first snapshot
+	for time.Now().Before(deadline) {
+		first = readSnapshot(t, wsA, 2*time.Second)
+		if len(first.Units) == 1 {
+			break
+		}
+	}
+	if len(first.Units) != 1 || first.Units[0].Side != 0 || first.Units[0].Lane != 0 {
+		t.Fatalf("expected A's soldier in A's snapshot, got %+v", first.Units)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	marched := false
+	for time.Now().Before(deadline) {
+		second := readSnapshot(t, wsA, 2*time.Second)
+		if len(second.Units) == 1 && second.Units[0].X > first.Units[0].X {
+			marched = true
+			break
+		}
+	}
+	if !marched {
+		t.Fatal("soldier should march right in real time")
+	}
 
-	// Wait for the match to end (soldier crosses in ~21s).
+	// Fog of war over the wire: B must not see the far-away soldier yet.
+	fogged := readSnapshot(t, wsB, 5*time.Second)
+	for _, u := range fogged.Units {
+		if u.Side == 0 {
+			t.Fatalf("B saw A's far-side soldier through the fog: %+v", u)
+		}
+	}
+
+	// Player B resigns to finish the match and test rematch flow.
+	if err := wsB.WriteJSON(map[string]any{"type": "resign"}); err != nil {
+		t.Fatal(err)
+	}
 	var final snapshot
-	end := time.Now().Add(60 * time.Second)
+	end := time.Now().Add(5 * time.Second)
 	for time.Now().Before(end) {
-		snap := readSnapshot(t, wsB, 5*time.Second)
+		snap := readSnapshot(t, wsA, 2*time.Second)
 		if snap.Finished {
 			final = snap
 			break
@@ -218,8 +258,8 @@ func TestEndToEndMatch(t *testing.T) {
 	if !final.Finished {
 		t.Fatal("match did not finish in time")
 	}
-	if final.Draw || final.Winner != 0 || final.WinLane != 0 {
-		t.Fatalf("expected side A to win lane 0, got draw=%v winner=%d lane=%d", final.Draw, final.Winner, final.WinLane)
+	if final.Draw || final.Winner != 0 {
+		t.Fatalf("expected side A to win, got draw=%v winner=%d", final.Draw, final.Winner)
 	}
 
 	// Both sides request a rematch; server should reset the match.
@@ -301,6 +341,57 @@ func TestResignEndsMatch(t *testing.T) {
 	}
 }
 
+// TestEmoteBroadcast verifies both seats receive each other's reactions.
+func TestEmoteBroadcast(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short mode")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ln.Addr().String()
+	srv := New(os.DirFS("../../web"))
+	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+
+	created := postJSON(t, "http://"+base+"/api/rooms", map[string]any{})
+	code := created["code"].(string)
+	tokenA := created["token"].(string)
+	tokenB, _ := postJSON(t, "http://"+base+"/api/rooms/"+code+"/join", map[string]any{})["token"].(string)
+
+	wsA := dialWS(t, base, code, tokenA)
+	defer wsA.Close()
+	wsB := dialWS(t, base, code, tokenB)
+	defer wsB.Close()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for _, ws := range []*websocket.Conn{wsA, wsB} {
+		got := false
+		for !got && time.Now().Before(deadline) {
+			msg := readMsg(t, ws, 2*time.Second)
+			got = msg["type"] == "matchStart"
+		}
+	}
+
+	if err := wsA.WriteJSON(map[string]any{"type": "emote", "emote": "gg"}); err != nil {
+		t.Fatal(err)
+	}
+	for name, ws := range map[string]*websocket.Conn{"A": wsA, "B": wsB} {
+		deadline := time.Now().Add(5 * time.Second)
+		got := false
+		for time.Now().Before(deadline) && !got {
+			msg := readMsg(t, ws, 2*time.Second)
+			if msg["type"] == "emote" && msg["emote"] == "gg" && msg["seat"] == float64(0) {
+				got = true
+			}
+		}
+		if !got {
+			t.Fatalf("seat %s never received the emote", name)
+		}
+	}
+}
+
 // TestRoomGuards covers join/rejoin error paths.
 func TestRoomGuards(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -328,5 +419,134 @@ func TestRoomGuards(t *testing.T) {
 	good := postJSON(t, "http://"+base+"/api/rooms/"+code+"/rejoin", map[string]any{"token": created["token"]})
 	if good["error"] != nil {
 		t.Fatalf("rejoin with correct token failed: %v", good)
+	}
+}
+
+func TestHideLuckAndWallScoutWS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping e2e in -short mode")
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ln.Addr().String()
+	srv := New(os.DirFS("../../web"))
+	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+
+	created := postJSON(t, "http://"+base+"/api/rooms", map[string]any{"hideLuck": true})
+	code := created["code"].(string)
+	tokenA := created["token"].(string)
+	tokenB, _ := postJSON(t, "http://"+base+"/api/rooms/"+code+"/join", map[string]any{})["token"].(string)
+
+	wsA := dialWS(t, base, code, tokenA)
+	defer wsA.Close()
+	wsB := dialWS(t, base, code, tokenB)
+	defer wsB.Close()
+
+	// Drain until matchStart
+	deadline := time.Now().Add(5 * time.Second)
+	for _, ws := range []*websocket.Conn{wsA, wsB} {
+		got := false
+		for !got && time.Now().Before(deadline) {
+			msg := readMsg(t, ws, 2*time.Second)
+			got = msg["type"] == "matchStart"
+		}
+	}
+
+	// Build a wall in lane 0 and scout lane 1
+	if err := wsA.WriteJSON(map[string]any{"type": "wall", "lane": 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := wsA.WriteJSON(map[string]any{"type": "scout", "lane": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Read raw snapshot to verify hideLuck, walls, and scoutedLanes
+	var raw map[string]any
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = wsA.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if err := wsA.ReadJSON(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if raw["type"] == "snapshot" {
+			walls, _ := raw["walls"].([]any)
+			if len(walls) >= 1 {
+				break
+			}
+		}
+	}
+	if raw["hideLuck"] != true {
+		t.Fatalf("expected hideLuck=true, got %v", raw["hideLuck"])
+	}
+	walls, _ := raw["walls"].([]any)
+	if len(walls) == 0 {
+		t.Fatal("expected built wall in snapshot")
+	}
+}
+
+func TestWinModeRoomConfigAndValidation(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := ln.Addr().String()
+	srv := New(os.DirFS("../../web"))
+	defer srv.Close()
+	go func() { _ = srv.Serve(ln) }()
+
+	// Validation errors
+	if bad := postJSON(t, "http://"+base+"/api/rooms", map[string]any{"winMode": "invalid"}); bad["error"] == nil {
+		t.Fatal("expected error for invalid winMode")
+	}
+	if bad := postJSON(t, "http://"+base+"/api/rooms", map[string]any{"winMode": "breaches", "breachesToWin": 6}); bad["error"] == nil {
+		t.Fatal("expected error for breachesToWin > 5")
+	}
+	if bad := postJSON(t, "http://"+base+"/api/rooms", map[string]any{"maxBreachLoots": 16}); bad["error"] == nil {
+		t.Fatal("expected error for maxBreachLoots > 15")
+	}
+	if bad := postJSON(t, "http://"+base+"/api/rooms", map[string]any{"maxBreachLoots": 0}); bad["error"] == nil {
+		t.Fatal("expected error for maxBreachLoots < 1")
+	}
+
+	// Valid "N Breaches" room with custom maxBreachLoots
+	created := postJSON(t, "http://"+base+"/api/rooms", map[string]any{
+		"winMode":        "breaches",
+		"breachesToWin":  4,
+		"maxBreachLoots": 12,
+	})
+	if created["error"] != nil {
+		t.Fatalf("unexpected error creating breaches room: %v", created)
+	}
+	code := created["code"].(string)
+	tokenA := created["token"].(string)
+	tokenB := postJSON(t, "http://"+base+"/api/rooms/"+code+"/join", map[string]any{})["token"].(string)
+
+	wsA := dialWS(t, base, code, tokenA)
+	defer wsA.Close()
+	wsB := dialWS(t, base, code, tokenB)
+	defer wsB.Close()
+
+	var raw map[string]any
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		_ = wsA.SetReadDeadline(time.Now().Add(2 * time.Second))
+		if err := wsA.ReadJSON(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if raw["type"] == "snapshot" {
+			break
+		}
+	}
+	if raw["winMode"] != "breaches" {
+		t.Fatalf("winMode = %v, want breaches", raw["winMode"])
+	}
+	if raw["breachesToWin"] != float64(4) {
+		t.Fatalf("breachesToWin = %v, want 4", raw["breachesToWin"])
+	}
+	if raw["maxBreachLoots"] != float64(12) {
+		t.Fatalf("maxBreachLoots = %v, want 12", raw["maxBreachLoots"])
 	}
 }

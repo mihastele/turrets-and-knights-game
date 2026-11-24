@@ -18,6 +18,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -48,15 +49,20 @@ type wsConn struct {
 }
 
 type room struct {
-	code      string
-	lives     int
-	players   [2]*player
-	game      *sim.Sim
-	state     string // "waiting" | "playing" | "finished"
-	rematch   [2]bool
-	created   time.Time
-	snapEvery int          // tick counter for snapshot decimation
-	lastEmote [2]time.Time // per-seat emote rate limit
+	code           string
+	private        bool
+	winMode        sim.WinMode
+	lives          int
+	breachesToWin  int
+	maxBreachLoots int
+	hideLuck       bool
+	players        [2]*player
+	game           *sim.Sim
+	state          string // "waiting" | "playing" | "finished"
+	rematch        [2]bool
+	created        time.Time
+	snapEvery      int          // tick counter for snapshot decimation
+	lastEmote      [2]time.Time // per-seat emote rate limit
 }
 
 // Server owns all rooms.
@@ -108,6 +114,7 @@ func NewWithOptions(webFS fs.FS, opts Options) *Server {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/rooms", s.handleCreateRoom)
+	mux.HandleFunc("GET /api/rooms", s.handleListRooms)
 	mux.HandleFunc("POST /api/rooms/{code}/join", s.handleJoinRoom)
 	mux.HandleFunc("POST /api/rooms/{code}/rejoin", s.handleRejoin)
 	mux.HandleFunc("POST /api/rooms/{code}/leave", s.handleLeave)
@@ -201,17 +208,28 @@ func randomSeed() int64 {
 // lobbyIdentity carries the client-generated player id and any coupon codes
 // the client holds. Both are optional; missing values just mean no entitlement.
 type lobbyIdentity struct {
-	playerID     string
-	coupons      []string
-	lives        int
-	invalidLives bool
+	private        bool
+	publicOnly     bool
+	playerID       string
+	coupons        []string
+	winMode        sim.WinMode
+	lives          int
+	breachesToWin  int
+	maxBreachLoots int
+	hideLuck       bool
+	invalidErr     string
 }
 
 // parseLobbyIdentity reads the optional identity body sent with create/join/
 // rejoin requests. Coupon codes are validated against the store right away;
 // only currently-valid codes are stored on the player.
 func (s *Server) parseLobbyIdentity(r *http.Request) lobbyIdentity {
-	var id lobbyIdentity
+	id := lobbyIdentity{
+		winMode:        sim.WinModeLives,
+		lives:          1,
+		breachesToWin:  3,
+		maxBreachLoots: 5,
+	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
 	if err != nil {
 		return id
@@ -220,19 +238,56 @@ func (s *Server) parseLobbyIdentity(r *http.Request) lobbyIdentity {
 		return id
 	}
 	var raw struct {
-		PlayerID string   `json:"playerId"`
-		Coupons  []string `json:"coupons"`
-		Lives    *int     `json:"lives"`
+		Private        bool     `json:"private"`
+		PublicOnly     bool     `json:"publicOnly"`
+		PlayerID       string   `json:"playerId"`
+		Coupons        []string `json:"coupons"`
+		WinMode        *string  `json:"winMode"`
+		Lives          *int     `json:"lives"`
+		BreachesToWin  *int     `json:"breachesToWin"`
+		MaxBreachLoots *int     `json:"maxBreachLoots"`
+		HideLuck       *bool    `json:"hideLuck"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
-		id.invalidLives = true
+		id.invalidErr = "invalid request body"
 		return id
 	}
 	id.playerID = normalizePlayerID(raw.PlayerID)
-	id.lives = 1
+	id.private = raw.Private
+	id.publicOnly = raw.PublicOnly
+	if raw.WinMode != nil {
+		mode := strings.ToLower(strings.TrimSpace(*raw.WinMode))
+		switch sim.WinMode(mode) {
+		case sim.WinModeLives, sim.WinModeBreaches:
+			id.winMode = sim.WinMode(mode)
+		default:
+			id.invalidErr = "winMode must be 'lives' or 'breaches'"
+			return id
+		}
+	}
 	if raw.Lives != nil {
 		id.lives = *raw.Lives
-		id.invalidLives = id.lives < 1 || id.lives > 10
+		if id.lives < 1 || id.lives > 10 {
+			id.invalidErr = "lives must be between 1 and 10"
+			return id
+		}
+	}
+	if raw.BreachesToWin != nil {
+		id.breachesToWin = *raw.BreachesToWin
+		if id.breachesToWin < 1 || id.breachesToWin > sim.NumLanes {
+			id.invalidErr = fmt.Sprintf("breachesToWin must be between 1 and %d", sim.NumLanes)
+			return id
+		}
+	}
+	if raw.MaxBreachLoots != nil {
+		id.maxBreachLoots = *raw.MaxBreachLoots
+		if id.maxBreachLoots < 1 || id.maxBreachLoots > 15 {
+			id.invalidErr = "maxBreachLoots must be between 1 and 15"
+			return id
+		}
+	}
+	if raw.HideLuck != nil {
+		id.hideLuck = *raw.HideLuck
 	}
 	id.coupons = s.entitledCoupons(raw.Coupons)
 	return id
@@ -250,12 +305,9 @@ func writeErr(w http.ResponseWriter, status int, msg string) {
 
 func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 	identity := s.parseLobbyIdentity(r)
-	if identity.invalidLives {
-		writeErr(w, http.StatusBadRequest, "lives must be between 1 and 10")
+	if identity.invalidErr != "" {
+		writeErr(w, http.StatusBadRequest, identity.invalidErr)
 		return
-	}
-	if identity.lives == 0 {
-		identity.lives = 1
 	}
 
 	s.mu.Lock()
@@ -281,19 +333,50 @@ func (s *Server) handleCreateRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.rooms[code] = &room{
-		code:    code,
-		lives:   identity.lives,
-		players: [2]*player{{token: token, seat: 0, playerID: identity.playerID, coupons: identity.coupons}, nil},
-		game:    sim.New(randomSeed(), s.balance),
-		state:   "waiting",
-		created: time.Now(),
+		code:           code,
+		private:        identity.private,
+		winMode:        identity.winMode,
+		lives:          identity.lives,
+		breachesToWin:  identity.breachesToWin,
+		maxBreachLoots: identity.maxBreachLoots,
+		hideLuck:       identity.hideLuck,
+		players:        [2]*player{{token: token, seat: 0, playerID: identity.playerID, coupons: identity.coupons}, nil},
+		game:           sim.New(randomSeed(), s.balance),
+		state:          "waiting",
+		created:        time.Now(),
 	}
+	s.rooms[code].game.SetWinMode(identity.winMode, identity.breachesToWin)
 	s.rooms[code].game.SetLives(identity.lives)
+	s.rooms[code].game.SetMaxBreachLoots(identity.maxBreachLoots)
+	s.rooms[code].game.SetHideLuck(identity.hideLuck)
 	log.Printf("room %s created", code)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"code": code, "token": token, "seat": 0, "side": "A",
 		"entitled": len(identity.coupons) > 0,
 	})
+}
+
+func (s *Server) handleListRooms(w http.ResponseWriter, r *http.Request) {
+	type listing struct {
+		Code           string      `json:"code"`
+		WinMode        sim.WinMode `json:"winMode"`
+		Lives          int         `json:"lives"`
+		BreachesToWin  int         `json:"breachesToWin"`
+		MaxBreachLoots int         `json:"maxBreachLoots"`
+		HideLuck       bool        `json:"hideLuck"`
+		created        time.Time
+	}
+	rooms := []listing{}
+	s.mu.Lock()
+	for _, rm := range s.rooms {
+		if !rm.private && rm.state == "waiting" && rm.players[0] != nil && rm.players[0].conn != nil && rm.players[1] == nil {
+			rooms = append(rooms, listing{rm.code, rm.winMode, rm.lives, rm.breachesToWin, rm.maxBreachLoots, rm.hideLuck, rm.created})
+		}
+	}
+	s.mu.Unlock()
+	sort.Slice(rooms, func(i, j int) bool { return rooms[i].created.Before(rooms[j].created) })
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, rooms)
 }
 
 func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
@@ -305,6 +388,10 @@ func (s *Server) handleJoinRoom(w http.ResponseWriter, r *http.Request) {
 	rm, ok := s.rooms[code]
 	if !ok {
 		writeErr(w, http.StatusNotFound, "room not found")
+		return
+	}
+	if identity.publicOnly && (rm.private || rm.state != "waiting" || rm.players[0] == nil || rm.players[0].conn == nil) {
+		writeErr(w, http.StatusConflict, "room is no longer available")
 		return
 	}
 	if rm.players[1] != nil {

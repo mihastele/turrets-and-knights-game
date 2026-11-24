@@ -22,13 +22,40 @@
       </div>
 
       <div class="lobby-actions">
-        <label for="room-lives">Lives per player <select id="room-lives"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select></label>
+        <label class="lobby-select" for="room-win-mode">Win strategy
+          <select id="room-win-mode">
+            <option value="lives" selected>Lives (N total breaches)</option>
+            <option value="breaches">N Breaches (distinct lanes)</option>
+          </select>
+        </label>
+        <label class="lobby-select" id="label-room-lives" for="room-lives">Lives per player
+          <select id="room-lives"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option><option>7</option><option>8</option><option>9</option><option>10</option></select>
+        </label>
+        <label class="lobby-select hidden" id="label-room-breaches" for="room-breaches-to-win">Distinct lanes to breach
+          <select id="room-breaches-to-win"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option><option value="4">4</option><option value="5">5</option></select>
+        </label>
+        <label class="lobby-select" id="label-room-breach-loots" for="room-max-breach-loots">Max breach loots / lane / match
+          <select id="room-max-breach-loots"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option><option value="5" selected>5</option><option value="6">6</option><option value="7">7</option><option value="8">8</option><option value="9">9</option><option value="10">10</option><option value="11">11</option><option value="12">12</option><option value="13">13</option><option value="14">14</option><option value="15">15</option></select>
+        </label>
+        <label class="lobby-checkbox" for="room-hide-luck">
+          <input type="checkbox" id="room-hide-luck" checked>
+          <span>🎲 Hide Luck <small>(field events stay hidden until scouted)</small></span>
+        </label>
+        <label class="lobby-checkbox" for="room-private">
+          <input type="checkbox" id="room-private">
+          <span>Make lobby private</span>
+        </label>
         <button id="btn-create" class="btn btn-primary btn-big">Create Room</button>
         <div class="divider"><span>or</span></div>
         <form id="join-form" class="join-row">
           <input id="join-code" class="code-input" maxlength="4" placeholder="CODE" autocomplete="off" spellcheck="false">
           <button type="submit" class="btn btn-secondary">Join</button>
         </form>
+        <section class="public-lobbies" aria-labelledby="public-lobbies-title">
+          <h2 id="public-lobbies-title">Public lobbies</h2>
+          <p id="public-lobbies-status" role="status">Loading lobbies…</p>
+          <div id="public-lobbies-list"></div>
+        </section>
       </div>
 
       <div class="coupon-box">
@@ -48,12 +75,13 @@
       <div class="howto">
         <h3>How it works</h3>
         <ul>
-          <li>Both commanders spend coins on <b>troops, turrets and factories</b>.</li>
-          <li>Each troop that crosses the enemy <b>breach line</b> takes one life. Choose 1–10 lives when creating a room.</li>
-          <li>You start with <b>100 coins</b>, get <b>+10 every 5s</b>, plus a shared windfall of 5–10 every 12–20s.</li>
-          <li>A <b>factory</b> adds +5 coins every 5s. Upgrade it twice to earn up to +15.</li>
-          <li>At <b>6:00</b> overtime starts: no new turrets, turrets lose 15% damage every 30s. At <b>10:00</b> the match is a draw.</li>
-          <li>Got a <b>coupon</b>? Redeem it below the room buttons to unlock the <b>Dragon</b> and lane-wide field effects.</li>
+          <li><b>Real-time battles:</b> Deploy the moment you can afford it — units march and fight instantly. Breach the enemy line to win.</li>
+          <li><b>Fog of War:</b> You always see your own half; past midfield you only see what your troops, towers, and <b>🔭 Scout Flares</b> reveal. Spotting enemies pays <b>recon coins</b> — pushing out beats sitting back.</li>
+          <li><b>Field events:</b> Gold loot, shrines, neutral golems, and hazards drop mid-field. First army there claims the prize — or walks into a trap.</li>
+          <li><b>Counters matter:</b> Spears beat cavalry, bows shred flyers, knights charge ranged lines, mages melt shields, rams and siege break towers &amp; walls. No single unit wins alone.</li>
+          <li><b>5-Track Upgrades:</b> Specialize units in Attack, Speed, HP, Shield, or <b>Elite Doctrine 🔒</b>. Towers take flak, walls take thorns.</li>
+          <li><b>Economy:</b> Income every 5s, shared windfalls, factories, <b>kill bounties</b>, and tower/wall bounties reward aggression.</li>
+          <li>Got a <b>coupon</b>? Redeem it to unlock the <b>Valkyrie</b>, <b>Dragon</b>, <b>Elite Doctrines</b>, and <b>Tactical Abilities</b>.</li>
         </ul>
       </div>
     </div>
@@ -73,9 +101,14 @@
       </div>
 
       <div class="tb-group tb-center">
-        <div id="clock" class="clock">0:00</div>
-        <div id="phase-pill" class="phase-pill">MATCH</div>
-        <div id="turret-power" class="turret-power hidden">Turrets 100%</div>
+        <div class="turn-row">
+          <span id="round-badge" class="round-badge">OT 6:00</span>
+          <div id="clock" class="clock">0:00</div>
+        </div>
+        <div class="turn-sub">
+          <div id="phase-pill" class="phase-pill">BATTLE</div>
+        </div>
+        <div id="turret-power" class="turret-power hidden">ESCALATION</div>
       </div>
 
       <div class="tb-group tb-right">
@@ -149,8 +182,8 @@
         </div>
         <section class="panel">
           <h3 class="panel-title">Deploy <span class="panel-hint">click a lane to send</span></h3>
+          <p id="selection-hint" class="selection-hint">Select a unit, then click a lane. Right-click or Esc cancels.</p>
           <div id="shop" class="shop-grid"></div>
-          <p id="selection-hint" class="selection-hint">Select a unit, then click a lane. Right-click / Esc to cancel.</p>
         </section>
 
         <section class="panel coupon-panel" id="coupon-panel">
@@ -158,25 +191,31 @@
           <p class="coupon-expiry" id="coupon-expiry"></p>
           <div class="ability-list">
             <button class="ability-btn" id="ability-rockslide" data-effect="rockslide">
-              <span class="ab-head"><span class="ab-icon">🪨</span><span class="ab-name">Rockslide</span><span class="ab-cost" id="ability-rockslide-cost">50c</span></span>
+              <span class="ab-head"><span class="ab-icon">🪨</span><span class="ab-name">Rockslide</span><span class="ab-cost" id="ability-rockslide-cost">45c</span></span>
               <span class="ab-desc">Rockfall crushes every ground enemy in a lane. Flyers dodge.</span>
               <span class="ab-cooldown" id="cooldown-rockslide"></span>
             </button>
             <button class="ability-btn" id="ability-dragonfire" data-effect="dragonfire">
-              <span class="ab-head"><span class="ab-icon">🔥</span><span class="ab-name">Dragon Fire</span><span class="ab-cost" id="ability-dragonfire-cost">80c</span></span>
+              <span class="ab-head"><span class="ab-icon">🔥</span><span class="ab-name">Dragon Fire</span><span class="ab-cost" id="ability-dragonfire-cost">70c</span></span>
               <span class="ab-desc">Set a lane ablaze — burning ground sears everything inside.</span>
               <span class="ab-cooldown" id="cooldown-dragonfire"></span>
+            </button>
+            <button class="ability-btn" id="ability-warcry" data-effect="warcry">
+              <span class="ab-head"><span class="ab-icon">📯</span><span class="ab-name">Warcry Blessing</span><span class="ab-cost" id="ability-warcry-cost">40c</span></span>
+              <span class="ab-desc">Grants +35% attack speed &amp; +30 Shield to your units in a lane.</span>
+              <span class="ab-cooldown" id="cooldown-warcry"></span>
             </button>
           </div>
         </section>
 
         <section class="panel">
-          <h3 class="panel-title">War upgrades <span class="panel-hint">apply to future spawns</span></h3>
+          <h3 class="panel-title">War upgrades <span class="panel-hint">5-track specialization</span></h3>
+          <div id="upgrade-unit-tabs" class="upgrade-unit-tabs"></div>
           <div id="unit-upgrades" class="upgrade-list"></div>
         </section>
 
         <section class="panel">
-          <h3 class="panel-title">Turret upgrades <span class="panel-hint">heal? never. +stats only</span></h3>
+          <h3 class="panel-title">Tower &amp; Wall defenses <span class="panel-hint">fortify &amp; upgrade per lane</span></h3>
           <div id="turret-upgrades" class="turret-upgrade-grid"></div>
         </section>
 
